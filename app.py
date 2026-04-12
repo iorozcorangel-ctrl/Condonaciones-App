@@ -744,45 +744,145 @@ with nav[1]:
                 unsafe_allow_html=True)
 
     with st.spinner("Cargando historial..."):
-        historial = obtener_historial()
+        historial_completo = obtener_historial(2000)
 
-    if not historial:
+    if not historial_completo:
         st.info("No hay notas de crédito registradas aún.")
     else:
-        for reg in historial:
-            fecha_str = reg["fecha_creacion"][:10] if reg["fecha_creacion"] else "—"
-            monto_str = f"${reg['monto_total']:,.2f}" if reg["monto_total"] else "$0.00"
+        # ── Filtros y búsqueda ────────────────────────────────
+        sf1, sf2, sf3 = st.columns([2, 2, 2])
+        with sf1:
+            busqueda = st.text_input("🔍 Buscar por N° NC",
+                                      placeholder="Ej: NC-2585",
+                                      key="hist_busqueda")
+        with sf2:
+            usuarios_hist = sorted(set(r["usuario_nombre"] for r in historial_completo))
+            filtro_usuario = st.selectbox("👤 Filtrar por usuario",
+                                          ["Todos"] + usuarios_hist,
+                                          key="hist_usuario")
+        with sf3:
+            col_f1, col_f2 = st.columns(2)
+            fecha_desde = col_f1.date_input("Desde", value=None,
+                                             key="hist_desde",
+                                             format="DD/MM/YYYY")
+            fecha_hasta = col_f2.date_input("Hasta", value=None,
+                                             key="hist_hasta",
+                                             format="DD/MM/YYYY")
 
-            with st.expander(
-                f"📄 {reg['numero_nc']}  —  {fecha_str}  —  {reg['usuario_nombre']}  —  {monto_str}"
-            ):
-                col_info, col_acc = st.columns([3, 1])
-                with col_info:
-                    st.write(f"**Fecha:** {fecha_str}")
-                    st.write(f"**Usuario:** {reg['usuario_nombre']}")
-                    st.write(f"**Contenedores:** {reg['total_contenedores']}")
-                    st.write(f"**Monto Total:** {monto_str}")
+        # ── Aplicar filtros ───────────────────────────────────
+        historial = historial_completo.copy()
 
-                    if st.button("🔍 Ver Detalle", key=f"det_{reg['id']}"):
-                        with st.spinner("Cargando detalle..."):
-                            detalle = obtener_detalle_nc(reg["id"])
-                        if detalle:
-                            df_det = pd.DataFrame(detalle)
-                            df_det.columns = ["Contenedor", "N° Factura"]
-                            st.dataframe(df_det, use_container_width=True,
-                                         hide_index=True)
-                        else:
-                            st.info("Sin detalle disponible.")
+        if busqueda.strip():
+            historial = [r for r in historial
+                        if busqueda.strip().upper() in r["numero_nc"].upper()]
 
-                with col_acc:
-                    if es_admin:
-                        if st.button("🗑️ Eliminar", key=f"del_{reg['id']}",
-                                     type="secondary"):
-                            if eliminar_nc(reg["id"]):
-                                st.success("Registro eliminado")
-                                st.rerun()
+        if filtro_usuario != "Todos":
+            historial = [r for r in historial
+                        if r["usuario_nombre"] == filtro_usuario]
+
+        if fecha_desde:
+            historial = [r for r in historial
+                        if r["fecha_creacion"] and
+                        r["fecha_creacion"][:10] >= fecha_desde.isoformat()]
+
+        if fecha_hasta:
+            historial = [r for r in historial
+                        if r["fecha_creacion"] and
+                        r["fecha_creacion"][:10] <= fecha_hasta.isoformat()]
+
+        # ── Paginación ────────────────────────────────────────
+        REGISTROS_POR_PAG = 20
+        total_regs  = len(historial)
+        total_pags  = max(1, -(-total_regs // REGISTROS_POR_PAG))  # ceil division
+
+        if "hist_pag" not in st.session_state:
+            st.session_state["hist_pag"] = 1
+
+        # Reset página si cambió el filtro
+        if st.session_state.get("hist_filtro_prev") != (busqueda, filtro_usuario, fecha_desde, fecha_hasta):
+            st.session_state["hist_pag"] = 1
+            st.session_state["hist_filtro_prev"] = (busqueda, filtro_usuario, fecha_desde, fecha_hasta)
+
+        pag_actual = st.session_state["hist_pag"]
+
+        # Controles de paginación arriba
+        pc1, pc2, pc3 = st.columns([1, 3, 1])
+        with pc1:
+            if st.button("◀ Anterior", disabled=pag_actual <= 1, key="pag_ant"):
+                st.session_state["hist_pag"] -= 1
+                st.rerun()
+        with pc2:
+            inicio = (pag_actual - 1) * REGISTROS_POR_PAG + 1
+            fin    = min(pag_actual * REGISTROS_POR_PAG, total_regs)
+            st.markdown(f"<div style='text-align:center;padding:6px;font-size:13px;'>"
+                        f"Mostrando <b>{inicio}–{fin}</b> de <b>{total_regs}</b> registros "
+                        f"— Página <b>{pag_actual}</b> de <b>{total_pags}</b></div>",
+                        unsafe_allow_html=True)
+        with pc3:
+            if st.button("Siguiente ▶", disabled=pag_actual >= total_pags, key="pag_sig"):
+                st.session_state["hist_pag"] += 1
+                st.rerun()
+
+        st.markdown("---")
+
+        # ── Registros de la página actual ─────────────────────
+        idx_inicio = (pag_actual - 1) * REGISTROS_POR_PAG
+        idx_fin    = idx_inicio + REGISTROS_POR_PAG
+        pag_regs   = historial[idx_inicio:idx_fin]
+
+        if not pag_regs:
+            st.info("No se encontraron registros con los filtros aplicados.")
+        else:
+            for reg in pag_regs:
+                fecha_str = reg["fecha_creacion"][:10] if reg["fecha_creacion"] else "—"
+                monto_str = f"${reg['monto_total']:,.2f}" if reg["monto_total"] else "$0.00"
+
+                with st.expander(
+                    f"📄 {reg['numero_nc']}  —  {fecha_str}  —  {reg['usuario_nombre']}  —  {monto_str}"
+                ):
+                    col_info, col_acc = st.columns([3, 1])
+                    with col_info:
+                        st.write(f"**Fecha:** {fecha_str}")
+                        st.write(f"**Usuario:** {reg['usuario_nombre']}")
+                        st.write(f"**Contenedores:** {reg['total_contenedores']}")
+                        st.write(f"**Monto Total:** {monto_str}")
+
+                        if st.button("🔍 Ver Detalle", key=f"det_{reg['id']}"):
+                            with st.spinner("Cargando detalle..."):
+                                detalle = obtener_detalle_nc(reg["id"])
+                            if detalle:
+                                df_det = pd.DataFrame(detalle)
+                                df_det.columns = ["Contenedor", "N° Factura"]
+                                st.dataframe(df_det, use_container_width=True,
+                                             hide_index=True)
                             else:
-                                st.error("Error al eliminar")
+                                st.info("Sin detalle disponible.")
+
+                    with col_acc:
+                        if es_admin:
+                            if st.button("🗑️ Eliminar", key=f"del_{reg['id']}",
+                                         type="secondary"):
+                                if eliminar_nc(reg["id"]):
+                                    st.success("Registro eliminado")
+                                    st.rerun()
+                                else:
+                                    st.error("Error al eliminar")
+
+        # Controles de paginación abajo también
+        st.markdown("---")
+        pb1, pb2, pb3 = st.columns([1, 3, 1])
+        with pb1:
+            if st.button("◀ Anterior", disabled=pag_actual <= 1, key="pag_ant2"):
+                st.session_state["hist_pag"] -= 1
+                st.rerun()
+        with pb2:
+            st.markdown(f"<div style='text-align:center;padding:6px;font-size:13px;'>"
+                        f"Página <b>{pag_actual}</b> de <b>{total_pags}</b></div>",
+                        unsafe_allow_html=True)
+        with pb3:
+            if st.button("Siguiente ▶", disabled=pag_actual >= total_pags, key="pag_sig2"):
+                st.session_state["hist_pag"] += 1
+                st.rerun()
 
 # ════════════════════════════════════════════════════════════════
 #   PESTAÑA 3 — USUARIOS (solo admin)

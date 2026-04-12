@@ -1,6 +1,6 @@
 """
 ================================================================
-  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA PACÍFICO
+  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA
   Versión Web — Streamlit + Supabase
 ================================================================
 """
@@ -752,8 +752,8 @@ with nav[1]:
         # ── Filtros y búsqueda ────────────────────────────────
         sf1, sf2, sf3 = st.columns([2, 2, 2])
         with sf1:
-            busqueda = st.text_input("🔍 Buscar por N° NC",
-                                      placeholder="Ej: NC-2585",
+            busqueda = st.text_input("🔍 Buscar por NC, contenedor o factura",
+                                      placeholder="Ej: NC-2585 / MSCU1234567 / FAC-001",
                                       key="hist_busqueda")
         with sf2:
             usuarios_hist = sorted(set(r["usuario_nombre"] for r in historial_completo))
@@ -773,8 +773,27 @@ with nav[1]:
         historial = historial_completo.copy()
 
         if busqueda.strip():
-            historial = [r for r in historial
-                        if busqueda.strip().upper() in r["numero_nc"].upper()]
+            termino = busqueda.strip().upper()
+            # Buscar por NC directo
+            por_nc = [r for r in historial if termino in r["numero_nc"].upper()]
+            ids_nc = {r["id"] for r in por_nc}
+
+            # Buscar por contenedor o factura en detalle_nc
+            try:
+                from app.database import get_client as _gc
+                db2 = _gc()
+                res2 = db2.table("detalle_nc").select(
+                    "historial_nc_id, contenedor, numero_factura"
+                ).or_(
+                    f"contenedor.ilike.%{termino}%,"
+                    f"numero_factura.ilike.%{termino}%"
+                ).execute()
+                ids_detalle = {r["historial_nc_id"] for r in (res2.data or [])}
+            except Exception:
+                ids_detalle = set()
+
+            ids_total = ids_nc | ids_detalle
+            historial = [r for r in historial if r["id"] in ids_total]
 
         if filtro_usuario != "Todos":
             historial = [r for r in historial

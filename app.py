@@ -1,6 +1,6 @@
 """
 ================================================================
-  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA
+  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA 
   Versión Web — Streamlit + Supabase
 ================================================================
 """

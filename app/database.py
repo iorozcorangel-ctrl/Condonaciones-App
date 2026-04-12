@@ -192,7 +192,7 @@ def verificar_duplicados(contenedores: list, facturas: list):
         return []
 
 
-def obtener_historial(limite: int = 100):
+def obtener_historial(limite: int = 2000):
     """Retorna el historial de NCs ordenado por fecha descendente."""
     try:
         db = get_client()

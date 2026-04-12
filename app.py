@@ -737,9 +737,19 @@ if es_admin:
                         if st.button("Guardar", key=f"savepwd_{u['id']}"):
                             if np1 and np1 == np2:
                                 ok, msg = cambiar_password(u["id"], np1)
-                                st.success(msg) if ok else st.error(msg)
+                                st.session_state[f"pwd_msg_{u['id']}"] = (ok, msg)
+                                st.rerun()
                             else:
-                                st.warning("Las contraseñas no coinciden")
+                                st.session_state[f"pwd_msg_{u['id']}"] = (False, "Las contraseñas no coinciden")
+                                st.rerun()
+
+                # Mensaje fuera del popover
+                if f"pwd_msg_{u['id']}" in st.session_state:
+                    ok_m, msg_m = st.session_state.pop(f"pwd_msg_{u['id']}")
+                    if ok_m:
+                        st.success(msg_m)
+                    else:
+                        st.warning(msg_m)
 
                 # Activar / Desactivar
                 with ua2:

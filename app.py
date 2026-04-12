@@ -1,6 +1,6 @@
 """
 ================================================================
-  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA
+  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA PACÍFICO
   Versión Web — Streamlit + Supabase
 ================================================================
 """
@@ -244,28 +244,20 @@ with nav[0]:
         st.markdown("<div class='sec-hdr'>Datos de Solicitud</div>",
                     unsafe_allow_html=True)
         dc1, dc2 = st.columns(2)
-        # Reset NC y fecha si viene de Nuevo Análisis
-        if st.session_state.get("nc_reset", False):
-            st.session_state["nc_val"]    = ""
-            st.session_state["fecha_val"] = date.today()
-            st.session_state["nc_reset"]  = False
-
+        # Reset NC y fecha — usar input_key para forzar re-render
+        ikey = st.session_state["uploader_key"]
         nc_input = dc1.text_input("N° Nota de Crédito",
                                    placeholder="Ej: NC-2585",
-                                   value=st.session_state.get("nc_val", ""),
                                    disabled=bloqueado,
-                                   key="nc_input_field")
-        st.session_state["nc_val"] = nc_input
+                                   key=f"nc_input_{ikey}")
 
         with dc2:
-            fecha_default = st.session_state.get("fecha_val") or date.today()
             fecha_picker = st.date_input("Fecha Solicitud NC",
-                                          value=fecha_default,
+                                          value=date.today(),
                                           format="DD/MM/YYYY",
                                           disabled=bloqueado,
-                                          key="fecha_picker")
+                                          key=f"fecha_picker_{ikey}")
             fecha_picker = fecha_picker if fecha_picker else date.today()
-            st.session_state["fecha_val"] = fecha_picker
             fecha_input = fecha_picker.strftime("%d/%m/%Y")
         st.caption("La fecha aplica a todos los contenedores.")
 
@@ -337,7 +329,6 @@ with nav[0]:
                 st.session_state["montos"]             = {}
                 st.session_state["alertas"]            = []
                 st.session_state["paso"]               = "inicio"
-                st.session_state["nc_reset"]           = True
                 st.session_state["uploader_key"] += 1
                 st.rerun()
 
@@ -657,7 +648,6 @@ with nav[0]:
                 st.session_state["dias_manual_previo"] = 0
                 st.session_state["dias_manual_ffcc"]   = 0
                 st.session_state["dias_manual_carr"]   = 0
-                st.session_state["nc_reset"]           = True
                 st.rerun()
 
     # ── Panel derecho: Calendario ─────────────────────────────

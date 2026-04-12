@@ -92,7 +92,7 @@ if not st.session_state["autenticado"]:
 st.markdown("""
 <div class='topbar'>
   <h1>🚢 Sistema de Condonaciones</h1>
-  <p>Terminal Portuaria Pacífico · Análisis de Gastos Extra</p>
+  <p>Terminal Portuaria · Análisis de Gastos Extra</p>
 </div>
 """, unsafe_allow_html=True)
 

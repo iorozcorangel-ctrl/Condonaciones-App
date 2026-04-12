@@ -1,6 +1,6 @@
 """
 ================================================================
-  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA 
+  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA
   Versión Web — Streamlit + Supabase
 ================================================================
 """
@@ -73,6 +73,9 @@ def init():
         "dias_manual_previo": 0,
         "dias_manual_ffcc":   0,
         "dias_manual_carr":   0,
+        "nc_reset":          False,
+        "nc_val":            "",
+        "fecha_val":         None,
     }
     for k, v in defs.items():
         if k not in st.session_state:
@@ -241,15 +244,26 @@ with nav[0]:
         st.markdown("<div class='sec-hdr'>Datos de Solicitud</div>",
                     unsafe_allow_html=True)
         dc1, dc2 = st.columns(2)
+        # Reset NC y fecha si viene de Nuevo Análisis
+        if st.session_state.get("nc_reset", False):
+            st.session_state["nc_val"]    = ""
+            st.session_state["fecha_val"] = date.today()
+            st.session_state["nc_reset"]  = False
+
         nc_input = dc1.text_input("N° Nota de Crédito",
                                    placeholder="Ej: NC-2585",
-                                   disabled=bloqueado)
+                                   value=st.session_state.get("nc_val", ""),
+                                   disabled=bloqueado,
+                                   key="nc_input_field")
+        st.session_state["nc_val"] = nc_input
+
         with dc2:
             fecha_picker = st.date_input("Fecha Solicitud NC",
-                                          value=date.today(),
+                                          value=st.session_state.get("fecha_val", date.today()),
                                           format="DD/MM/YYYY",
                                           disabled=bloqueado,
                                           key="fecha_picker")
+            st.session_state["fecha_val"] = fecha_picker
             fecha_input = fecha_picker.strftime("%d/%m/%Y")
         st.caption("La fecha aplica a todos los contenedores.")
 
@@ -313,14 +327,15 @@ with nav[0]:
                                 use_container_width=True, type="primary")
         with bb2:
             if st.button("↺ Nuevo Análisis", use_container_width=True):
-                st.session_state["df_tab"]       = None
-                st.session_state["df_bi"]        = None
-                st.session_state["df_tab_v"]     = None
-                st.session_state["df_bi_v"]      = None
-                st.session_state["desfases"]     = {}
-                st.session_state["montos"]       = {}
-                st.session_state["alertas"]      = []
-                st.session_state["paso"]         = "inicio"
+                st.session_state["df_tab"]             = None
+                st.session_state["df_bi"]              = None
+                st.session_state["df_tab_v"]           = None
+                st.session_state["df_bi_v"]            = None
+                st.session_state["desfases"]           = {}
+                st.session_state["montos"]             = {}
+                st.session_state["alertas"]            = []
+                st.session_state["paso"]               = "inicio"
+                st.session_state["nc_reset"]           = True
                 st.session_state["uploader_key"] += 1
                 st.rerun()
 
@@ -373,6 +388,24 @@ with nav[0]:
                 alertas.append(("warning", a))
 
             # ── Verificar duplicados en BD ────────────────────
+            # ── Validar días del calendario contra TimeIn ────────
+            from app.validaciones import to_date as _to_date
+            timein_dates = [_to_date(row.get(COL_BI["time_in"]))
+                           for _, row in df_bv.iterrows()
+                           if _to_date(row.get(COL_BI["time_in"]))]
+            if timein_dates:
+                timein_min = min(timein_dates)
+                dias_invalidos = [d for d in st.session_state["dias_especiales"]
+                                  if d < timein_min]
+                if dias_invalidos:
+                    # Desmarcar los días inválidos automáticamente
+                    for d in dias_invalidos:
+                        st.session_state["dias_especiales"].discard(d)
+                    alertas.append(("warning",
+                        f"⚠️ Día(s) marcado(s) en el calendario anteriores al "
+                        f"ingreso del contenedor ({timein_min.strftime('%d/%m/%Y')}). "
+                        f"Se desmarcaron automáticamente."))
+
             with st.spinner("Verificando duplicados en historial..."):
                 contenedores_list = df_bv[COL_BI["contenedor"]].tolist()
                 facturas_list     = df_bv[COL_BI["no_factura"]].tolist() if COL_BI["no_factura"] in df_bv.columns else []
@@ -608,16 +641,21 @@ with nav[0]:
 
             st.markdown("---")
             if st.button("↺ Realizar nuevo análisis", use_container_width=True):
-                st.session_state["df_tab"]        = None
-                st.session_state["df_bi"]         = None
-                st.session_state["df_tab_v"]      = None
-                st.session_state["df_bi_v"]       = None
-                st.session_state["desfases"]      = {}
-                st.session_state["montos"]        = {}
-                st.session_state["alertas"]       = []
-                st.session_state["paso"]          = "inicio"
-                st.session_state["uploader_key"] += 1
-                st.session_state["nc_registrada"] = False
+                st.session_state["df_tab"]             = None
+                st.session_state["df_bi"]              = None
+                st.session_state["df_tab_v"]           = None
+                st.session_state["df_bi_v"]            = None
+                st.session_state["desfases"]           = {}
+                st.session_state["montos"]             = {}
+                st.session_state["alertas"]            = []
+                st.session_state["paso"]               = "inicio"
+                st.session_state["uploader_key"]      += 1
+                st.session_state["nc_registrada"]      = False
+                st.session_state["cond_manual"]        = False
+                st.session_state["dias_manual_previo"] = 0
+                st.session_state["dias_manual_ffcc"]   = 0
+                st.session_state["dias_manual_carr"]   = 0
+                st.session_state["nc_reset"]           = True
                 st.rerun()
 
     # ── Panel derecho: Calendario ─────────────────────────────

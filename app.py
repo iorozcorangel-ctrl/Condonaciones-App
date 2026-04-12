@@ -73,7 +73,7 @@ if not st.session_state["autenticado"]:
     with c2:
         st.markdown("<h2 style='text-align:center;color:#1F4E79;'>🚢 Sistema de Condonaciones</h2>",
                     unsafe_allow_html=True)
-        st.markdown("<p style='text-align:center;color:#666;'>Terminal Portuaria Pacífico</p>",
+        st.markdown("<p style='text-align:center;color:#666;'>Terminal Portuaria</p>",
                     unsafe_allow_html=True)
         with st.form("login"):
             pwd = st.text_input("Contraseña", type="password")

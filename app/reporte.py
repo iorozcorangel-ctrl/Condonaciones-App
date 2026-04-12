@@ -244,8 +244,13 @@ def generar_reporte(df_tab, df_bi, desfases, montos, fecha_solicitud_global,
         _dat(ws, data_row, c, dc if dc > 0 else 0);                                    c += 1
         _dat(ws, data_row, c, comentario);                                              c += 1
         _dat(ws, data_row, c, bi_val("tipo_contenedor"));                               c += 1
-        _dat(ws, data_row, c, bi_val("is_oog"));                                        c += 1
-        _dat(ws, data_row, c, bi_val("is_hazardous"));                                  c += 1
+        def to_si_no(val):
+            if val is None: return "NO"
+            s = str(val).strip().upper()
+            if s in ("TRUE","1","SI","SÍ","YES"): return "SI"
+            return "NO"
+        _dat(ws, data_row, c, to_si_no(bi_val("is_oog")));                              c += 1
+        _dat(ws, data_row, c, to_si_no(bi_val("is_hazardous")));                        c += 1
         _dat(ws, data_row, c, int(m.get("alm_qty", 0)));                                c += 1
         _dat(ws, data_row, c, int(m.get("dias_alm_condonar", 0)));                      c += 1
         _dat(ws, data_row, c, int(m.get("dias_alm_cobrar", 0)));                        c += 1

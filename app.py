@@ -32,16 +32,16 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-.topbar{background:#1F4E79;padding:16px 24px;border-radius:8px;margin-bottom:20px;}
+.topbar{background:#E65100;padding:16px 24px;border-radius:8px;margin-bottom:20px;}
 .topbar h1{color:white;font-size:22px;margin:0;font-weight:600;}
-.topbar p{color:#9ec5e8;font-size:13px;margin:4px 0 0 0;}
-.sec-hdr{background:#1F4E79;color:white;padding:8px 14px;border-radius:6px;
+.topbar p{color:#FFCC80;font-size:13px;margin:4px 0 0 0;}
+.sec-hdr{background:#E65100;color:white;padding:8px 14px;border-radius:6px;
          font-weight:600;font-size:14px;margin-bottom:12px;}
-.admin-hdr{background:#5C3317;color:white;padding:8px 14px;border-radius:6px;
+.admin-hdr{background:#BF360C;color:white;padding:8px 14px;border-radius:6px;
            font-weight:600;font-size:14px;margin-bottom:12px;}
-.badge-admin{background:#E65100;color:white;padding:2px 10px;border-radius:20px;
+.badge-admin{background:#BF360C;color:white;padding:2px 10px;border-radius:20px;
              font-size:12px;font-weight:600;}
-.badge-user{background:#1F4E79;color:white;padding:2px 10px;border-radius:20px;
+.badge-user{background:#E65100;color:white;padding:2px 10px;border-radius:20px;
             font-size:12px;font-weight:600;}
 </style>
 """, unsafe_allow_html=True)
@@ -84,7 +84,7 @@ if st.session_state["usuario"] is None:
     with c2:
         st.markdown("""
         <div style='text-align:center;padding:40px 0 20px;'>
-          <h2 style='color:#1F4E79;'>🚢 Sistema de Condonaciones</h2>
+          <h2 style='color:#E65100;'>🚢 Sistema de Condonaciones</h2>
           <p style='color:#666;'>Terminal Portuaria Pacífico</p>
         </div>
         """, unsafe_allow_html=True)
@@ -121,7 +121,7 @@ with col_titulo:
     st.markdown("""
     <div class='topbar'>
       <h1>🚢 Sistema de Condonaciones</h1>
-      <p>Terminal Portuaria Pacífico · Análisis de Gastos Extra</p>
+      <p>Terminal Portuaria · Análisis de Condonaciones</p>
     </div>
     """, unsafe_allow_html=True)
 with col_user:

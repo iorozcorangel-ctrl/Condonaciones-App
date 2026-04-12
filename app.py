@@ -218,12 +218,16 @@ with nav[0]:
         st.markdown("<div class='sec-hdr'>Datos de Solicitud</div>",
                     unsafe_allow_html=True)
         dc1, dc2 = st.columns(2)
-        nc_input    = dc1.text_input("N° Nota de Crédito",
-                                      placeholder="Ej: NC-2585",
-                                      disabled=bloqueado)
-        fecha_input = dc2.text_input("Fecha Solicitud NC (DD/MM/AAAA)",
-                                      value=date.today().strftime("%d/%m/%Y"),
-                                      disabled=bloqueado)
+        nc_input = dc1.text_input("N° Nota de Crédito",
+                                   placeholder="Ej: NC-2585",
+                                   disabled=bloqueado)
+        with dc2:
+            fecha_picker = st.date_input("Fecha Solicitud NC",
+                                          value=date.today(),
+                                          format="DD/MM/YYYY",
+                                          disabled=bloqueado,
+                                          key="fecha_picker")
+            fecha_input = fecha_picker.strftime("%d/%m/%Y")
         st.caption("La fecha aplica a todos los contenedores.")
 
         # ── Archivos ──────────────────────────────────────────

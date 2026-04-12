@@ -1,6 +1,6 @@
 """
 ================================================================
-  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA PACÍFICO
+  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA
   Versión Web — Streamlit + Supabase
 ================================================================
 """
@@ -142,7 +142,7 @@ with col_user:
         st.rerun()
 
 # ── Navegación ──────────────────────────────────────────────────
-tabs_disponibles = ["📊 Análisis", "📋 Historial NC"]
+tabs_disponibles = ["📊 Análisis", "📋 Historial NC", "📖 Reglas de Aplicación"]
 if es_admin:
     tabs_disponibles.append("👥 Usuarios")
 

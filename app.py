@@ -1,6 +1,6 @@
 """
 ================================================================
-  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA PACÍFICO
+  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA
   Versión Web — Streamlit + Supabase
 ================================================================
 """
@@ -92,7 +92,7 @@ if st.session_state["usuario"] is None:
         st.markdown("""
         <div style='text-align:center;padding:40px 0 20px;'>
           <h2 style='color:#E65100;'>🚢 Sistema de Condonaciones</h2>
-          <p style='color:#666;'>Terminal Portuaria Pacífico</p>
+          <p style='color:#666;'>Terminal Portuaria</p>
         </div>
         """, unsafe_allow_html=True)
 

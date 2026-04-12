@@ -69,6 +69,10 @@ def init():
         "alertas":           [],
         "uploader_key":      0,
         "vista":             "analisis",  # analisis | historial | usuarios
+        "cond_manual":       False,
+        "dias_manual_previo": 0,
+        "dias_manual_ffcc":   0,
+        "dias_manual_carr":   0,
     }
     for k, v in defs.items():
         if k not in st.session_state:
@@ -85,7 +89,7 @@ if st.session_state["usuario"] is None:
         st.markdown("""
         <div style='text-align:center;padding:40px 0 20px;'>
           <h2 style='color:#E65100;'>🚢 Sistema de Condonaciones</h2>
-          <p style='color:#666;'>Terminal Portuaria Pacífico</p>
+          <p style='color:#666;'>Terminal Portuaria</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -214,6 +218,25 @@ with nav[0]:
                     st.session_state["mostrar_form_perfil"] = None
                     st.rerun()
 
+        # ── Resumen informativo del perfil ────────────────────
+        perfil_activo = st.session_state["perfiles"][nuevo_idx]
+        r1_txt = "✅ Activa" if perfil_activo.get("regla1_activa", True) else "❌ Desactivada"
+        r2_txt = "✅ Activa" if perfil_activo.get("regla2_activa", True) else "❌ Desactivada"
+        dp_txt = perfil_activo.get("dias_previo",    3)
+        df_txt = perfil_activo.get("dias_ferromex",  3)
+        dc_txt = perfil_activo.get("dias_carretero", 2)
+        st.markdown(f"""
+        <div style='background:#FFF3E0;border-left:4px solid #E65100;padding:10px 14px;
+                    border-radius:4px;font-size:13px;color:#555;margin-bottom:8px;'>
+        <b>Configuración del perfil activo:</b><br>
+        📅 <b>Regla 1</b> — Validación 30 días naturales: {r1_txt}<br>
+        📅 <b>Regla 2</b> — Validación primeros 4 días: {r2_txt}<br>
+        🔄 <b>Regla 3</b> — Plazo para posicionamiento de previo: <b>{dp_txt} días hábiles</b> (Lun–Sáb)<br>
+        🚂 <b>Regla 4</b> — Plazo para carga a góndola FFCC: <b>{df_txt} días naturales</b><br>
+        🚚 <b>Regla 5</b> — Plazo para entrega carretero: <b>{dc_txt} días hábiles</b> (excepto Sáb si programó Jue/Vie)
+        </div>
+        """, unsafe_allow_html=True)
+
         # ── Datos de solicitud ────────────────────────────────
         st.markdown("<div class='sec-hdr'>Datos de Solicitud</div>",
                     unsafe_allow_html=True)
@@ -229,6 +252,26 @@ with nav[0]:
                                           key="fecha_picker")
             fecha_input = fecha_picker.strftime("%d/%m/%Y")
         st.caption("La fecha aplica a todos los contenedores.")
+
+        # ── Condonación Manual Directa ────────────────────────
+        st.markdown("<div class='sec-hdr'>Condonación Manual Directa</div>",
+                    unsafe_allow_html=True)
+        cond_manual_check = st.checkbox(
+            "Realizar condonación manual directa (omite cálculo automático de desfases)",
+            value=st.session_state["cond_manual"],
+            disabled=bloqueado
+        )
+        st.session_state["cond_manual"] = cond_manual_check
+
+        if cond_manual_check:
+            st.caption("⚠️ Las reglas 3, 4 y 5 se omiten. Los días ingresados se usan directamente para calcular la condonación.")
+            cm1, cm2, cm3 = st.columns(3)
+            dias_m_previo = cm1.number_input("🔄 Días previo",      min_value=0, value=st.session_state["dias_manual_previo"], disabled=bloqueado)
+            dias_m_ffcc   = cm2.number_input("🚂 Días ferroviario", min_value=0, value=st.session_state["dias_manual_ffcc"],   disabled=bloqueado)
+            dias_m_carr   = cm3.number_input("🚚 Días carretero",   min_value=0, value=st.session_state["dias_manual_carr"],   disabled=bloqueado)
+            st.session_state["dias_manual_previo"] = dias_m_previo
+            st.session_state["dias_manual_ffcc"]   = dias_m_ffcc
+            st.session_state["dias_manual_carr"]   = dias_m_carr
 
         # ── Archivos ──────────────────────────────────────────
         st.markdown("<div class='sec-hdr'>Archivos de Entrada</div>",
@@ -343,9 +386,31 @@ with nav[0]:
                         f"(fecha: {dup['fecha']}). Verifique antes de continuar."))
 
             with st.spinner("Calculando desfases..."):
-                desfases = calcular_desfases(
-                    df_bv, st.session_state["dias_especiales"], perfil
-                )
+                if st.session_state["cond_manual"]:
+                    dp_m = int(st.session_state["dias_manual_previo"])
+                    df_m = int(st.session_state["dias_manual_ffcc"])
+                    dc_m = int(st.session_state["dias_manual_carr"])
+                    if dp_m == 0 and df_m == 0 and dc_m == 0:
+                        st.error("❌ Condonación manual activa: debes ingresar al menos 1 día en alguno de los campos. No hay condonaciones a realizar.")
+                        st.session_state["paso"] = "inicio"
+                        st.stop()
+                    # Construir desfases manuales por contenedor
+                    desfases = {}
+                    for _, row in df_bv.iterrows():
+                        cont = row[COL_BI["contenedor"]]
+                        desfases[cont] = {
+                            "desfase_previo":    dp_m,
+                            "desfase_ffcc":      df_m,
+                            "desfase_carretero": dc_m,
+                            "total_desfase":     dp_m + df_m + dc_m,
+                            "es_manual":         True,
+                        }
+                else:
+                    desfases = calcular_desfases(
+                        df_bv, st.session_state["dias_especiales"], perfil
+                    )
+                    for cont in desfases:
+                        desfases[cont]["es_manual"] = False
 
             with st.spinner("Calculando montos..."):
                 montos = calcular_montos(df_bv, desfases)
@@ -363,6 +428,16 @@ with nav[0]:
                 alertas.append(("warning",
                     f"**Regla 2 — 4 días:** Contenedores que no cumplen: "
                     f"{', '.join(no_r2)}"))
+
+            # ── Comentario dinámico para condonación manual ───────
+            if st.session_state["cond_manual"]:
+                dp_m = int(st.session_state["dias_manual_previo"])
+                df_m = int(st.session_state["dias_manual_ffcc"])
+                dc_m = int(st.session_state["dias_manual_carr"])
+                alertas.append(("info",
+                    f"**Condonación Manual Directa activa:** "
+                    f"Previo={dp_m} días | Ferroviario={df_m} días | "
+                    f"Carretero={dc_m} días | Total={dp_m+df_m+dc_m} días"))
 
             # Alertas liner y reprogramaciones
             liners, reprog = [], []
@@ -682,8 +757,228 @@ with nav[1]:
 # ════════════════════════════════════════════════════════════════
 #   PESTAÑA 3 — USUARIOS (solo admin)
 # ════════════════════════════════════════════════════════════════
+# ════════════════════════════════════════════════════════════════
+#   PESTAÑA 3 — REGLAS DE APLICACIÓN
+# ════════════════════════════════════════════════════════════════
+tab_reglas_idx = 2
+with nav[tab_reglas_idx]:
+    st.markdown("<div class='sec-hdr'>📖 Reglas de Aplicación del Sistema</div>",
+                unsafe_allow_html=True)
+
+    st.markdown("""
+    <div style='background:#FFF3E0;border-left:4px solid #E65100;padding:12px 16px;
+                border-radius:6px;margin-bottom:16px;font-size:14px;'>
+    ℹ️ Esta sección es <b>informativa</b>. Describe cómo el sistema calcula las condonaciones
+    y qué datos se requieren de los archivos Excel para que el análisis sea correcto.
+    </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("📁 Archivos requeridos", expanded=True):
+        st.markdown("""
+        El sistema requiere **2 archivos Excel** para realizar el análisis:
+
+        **📋 Tabulador Comercial** — Llenado por el cliente. Se usan:
+        - `CONTENEDOR` — Identificador único del contenedor
+        - `IMPORTE SIN IVA A CONDONAR` — Monto solicitado por el cliente
+        - `CLABE INTERBANCARIA` — Datos bancarios para la devolución
+
+        **📊 Archivo BI** — Descargado del sistema interno. Contiene fechas, montos y servicios por contenedor.
+        Ambos archivos deben tener **exactamente los mismos contenedores**.
+        El formato del contenedor debe ser: **4 letras + 7 números** (ejemplo: MSCU1234567).
+        """)
+
+    with st.expander("📅 Regla 1 — Plazo de 30 días naturales"):
+        st.markdown("""
+        ⏱️ **¿Qué valida?**
+        La solicitud de condonación debe realizarse dentro de los **30 días naturales**
+        posteriores a la fecha de salida del contenedor.
+
+        📌 **Datos utilizados:**
+        - `TimeOut` → Fecha real de salida del contenedor
+        - `Fecha de Solicitud NC` → Fecha ingresada por el usuario en la interfaz
+
+        ✅ **Si cumple:** Continúa el análisis normalmente.
+        ⚠️ **Si no cumple:** Se muestra alerta con los contenedores fuera de plazo.
+        El usuario decide si continúa o cancela.
+
+        💡 **Este parámetro puede desactivarse en perfiles personalizados.**
+        """)
+
+    with st.expander("📅 Regla 2 — Primeros 4 días desde ingreso"):
+        st.markdown("""
+        ⏱️ **¿Qué valida?**
+        La primera programación del cliente debe realizarse dentro de los **primeros 4 días naturales**
+        desde que el contenedor ingresó a la terminal. El día de ingreso cuenta como Día 1.
+
+        📌 **Datos utilizados:**
+        - `TimeIn` → Fecha de ingreso (Día 1, sin importar la hora)
+        - `FechaSolitudPrevio` → Fecha de solicitud de previo (opcional)
+        - `Fecha de Liberacion` → Fecha de solicitud de liberación
+
+        ✅ **Basta con que UNA de las dos fechas esté dentro del plazo.**
+        Si `FechaSolitudPrevio` está vacío, solo se valida con Liberación.
+
+        💡 **Este parámetro puede desactivarse en perfiles personalizados.**
+        """)
+
+    with st.expander("🔄 Regla 3 — Posicionamiento de Previo (días hábiles Lun–Sáb)"):
+        st.markdown("""
+        ⏱️ **¿Qué calcula?**
+        La terminal tiene un máximo de **3 días hábiles** (por default) a partir del día
+        siguiente a la solicitud de previo para posicionar el contenedor.
+
+        📌 **Datos utilizados:**
+        - `FechaSolitudPrevio` → Inicio del conteo
+        - `FechaPosicionamiento` → Fecha real de posicionamiento
+
+        📋 **Días que NO cuentan dentro del plazo:**
+        - Domingos siempre
+        - Festivos oficiales de México
+        - Días marcados manualmente en el calendario
+
+        ⚠️ **Si el campo está vacío**, el servicio no fue solicitado. Se registra 0 días de desfase.
+        💡 **El número de días puede modificarse en perfiles personalizados.**
+        """)
+
+    with st.expander("🚂 Regla 4 — Carga a Góndola FFCC (días naturales)"):
+        st.markdown("""
+        ⏱️ **¿Qué calcula?**
+        Para contenedores con **salida ferroviaria**, la terminal tiene **3 días naturales**
+        (por default) desde el día siguiente a la documentación ante FerroMex para cargar
+        el contenedor a la góndola.
+
+        📌 **Datos utilizados:**
+        - `FechaFerroMex` → Fecha de documentación ante FerroMex
+        - `Fecha Gondola` → Fecha real de carga a góndola
+
+        ⚠️ **Importante:** Esta regla usa **días naturales**. No se aplican excepciones
+        de fines de semana, festivos ni días del calendario.
+
+        Si alguno de los dos campos está vacío, el contenedor tuvo otra modalidad de salida
+        y esta regla no aplica (0 días de desfase).
+
+        💡 **El número de días puede modificarse en perfiles personalizados.**
+        """)
+
+    with st.expander("🚚 Regla 5 — Entrega Carretero (días hábiles con excepciones)"):
+        st.markdown("""
+        ⏱️ **¿Qué calcula?**
+        Para contenedores con **salida en camión**, la terminal tiene **2 días hábiles**
+        (por default) desde el día siguiente a la programación de entrega.
+
+        📌 **Datos utilizados:**
+        - `Fecha de programación de entrega` → Inicio del conteo
+        - `TimeOut` → Fecha real de entrega
+
+        📋 **Reglas especiales del sábado:**
+        - Si programó **Lunes a Miércoles** → el sábado SÍ cuenta como día hábil
+        - Si programó **Jueves o Viernes** → el sábado NO cuenta en el plazo
+
+        📋 **El domingo** nunca cuenta dentro del plazo, pero sí cuenta como día
+        de desfase si el plazo ya venció.
+
+        📋 **Festivos y días del calendario** solo se saltan si están dentro del plazo.
+        Una vez que hay desfase, todos los días cuentan.
+
+        💡 **El número de días puede modificarse en perfiles personalizados.**
+        """)
+
+    with st.expander("➕ Regla 6 — Total de Días de Desfase"):
+        st.markdown("""
+        **Fórmula:**
+        ```
+        Total Desfase = Días Regla 3 (Previo) + Días Regla 4 (FFCC) + Días Regla 5 (Carretero)
+        ```
+        Si alguna regla no aplica para un contenedor, se suma 0.
+        Este total se usa para calcular los montos a condonar en las Reglas 7, 8 y 9.
+        """)
+
+    with st.expander("💰 Regla 7 — Monto a Condonar por Almacenaje"):
+        st.markdown("""
+        📌 **Datos del BI utilizados:**
+        - `Almacenaje Qty` → Días totales de almacenaje cobrados
+        - `Almacenaje SubTotal` → Monto total cobrado por almacenaje
+
+        **Cálculo:**
+        ```
+        Costo por día = Almacenaje SubTotal ÷ Almacenaje Qty
+        Días a condonar = MIN(Total Desfase, Almacenaje Qty)
+        Monto a condonar = Costo por día × Días a condonar
+        Días a cobrar = MAX(Almacenaje Qty - Días Desfase, 0)
+        ```
+        ⚠️ Los días de desfase nunca pueden superar los días totales cobrados.
+        Si supera, se ecualiza automáticamente al máximo cobrado.
+        """)
+
+    with st.expander("❄️ Regla 8 — Monto a Condonar por Conexiones (Refrigerados)"):
+        st.markdown("""
+        Solo aplica para **contenedores refrigerados** con cobro de suministro de energía.
+        Usa los mismos días de desfase de la Regla 6.
+
+        📌 **Datos del BI utilizados:**
+        - `Suministro De Energía Qty` → Días de conexión cobrados
+        - `Suministro De Energía SubTotal` → Monto total cobrado
+
+        **Cálculo:**
+        ```
+        Costo por día = Energía SubTotal ÷ Energía Qty
+        Monto a condonar = Costo por día × MIN(Total Desfase, Energía Qty)
+        ```
+        Si los campos están vacíos o en 0, se registra **"No aplica"**.
+        """)
+
+    with st.expander("🏢 Regla 9 — Servicio de Administración y Control"):
+        st.markdown("""
+        Este servicio se condona de manera **total o nada** (sin condonaciones parciales).
+
+        ✅ **Se condona si:**
+        - Se cobró el servicio en la factura, Y
+        - Los días de desfase cubren completamente los días de almacenaje cobrados
+
+        ❌ **No se condona si:**
+        - No se cobró el servicio, O
+        - Los días de desfase son menores a los días de almacenaje totales
+
+        📌 **Dato del BI:** `Servicio de Administración y Control SubTotal`
+        """)
+
+    with st.expander("✏️ Condonación Manual Directa"):
+        st.markdown("""
+        Esta opción permite **omitir el cálculo automático** de las Reglas 3, 4 y 5
+        y colocar directamente los días a condonar por cada concepto.
+
+        📋 **¿Cuándo usarla?**
+        Cuando el cliente y la terminal acuerdan una cantidad específica de días
+        a condonar sin pasar por las reglas de negocio estándar.
+
+        📋 **¿Cómo funciona?**
+        - Se ingresan los días manualmente para Previo, Ferroviario y Carretero
+        - El total se usa igual que el resultado de la Regla 6
+        - Se aplican las mismas restricciones: no se puede condonar más días
+          de los que se cobraron en almacenaje
+        - Al menos uno de los tres campos debe ser mayor a 0
+
+        ⚠️ Las **Reglas 1 y 2** siguen validándose aunque la condonación sea manual.
+        """)
+
+    with st.expander("📆 Calendario de Días No Hábiles"):
+        st.markdown("""
+        El calendario permite marcar días que no se contarán como hábiles
+        en el cálculo de los plazos de las **Reglas 3 y 5**.
+
+        🟧 **Festivos oficiales** → Precargados automáticamente (Ley Federal del Trabajo)
+        🟨 **Días especiales** → Marcados manualmente por el usuario (cierres de aduana, etc.)
+        ⬜ **Fines de semana** → Sábados y domingos (efecto varía por regla)
+
+        ⚠️ **Importante:** La **Regla 4 (FFCC)** usa días naturales y NO respeta
+        el calendario ni festivos.
+
+        Los días marcados solo afectan el plazo si caen **dentro del período de condonación**.
+        Si el plazo ya venció y hay desfase, todos los días cuentan incluyendo los marcados.
+        """)
+
 if es_admin:
-    with nav[2]:
+    with nav[3]:
         st.markdown("<div class='admin-hdr'>Gestión de Usuarios</div>",
                     unsafe_allow_html=True)
 

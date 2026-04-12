@@ -1,6 +1,6 @@
 """
 ================================================================
-  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA
+  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA PACÍFICO
   Versión Web — Streamlit + Supabase
 ================================================================
 """
@@ -92,7 +92,7 @@ if st.session_state["usuario"] is None:
         st.markdown("""
         <div style='text-align:center;padding:40px 0 20px;'>
           <h2 style='color:#E65100;'>🚢 Sistema de Condonaciones</h2>
-          <p style='color:#666;'>Terminal Portuaria</p>
+          <p style='color:#666;'>Terminal Portuaria Pacífico</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -258,11 +258,13 @@ with nav[0]:
         st.session_state["nc_val"] = nc_input
 
         with dc2:
+            fecha_default = st.session_state.get("fecha_val") or date.today()
             fecha_picker = st.date_input("Fecha Solicitud NC",
-                                          value=st.session_state.get("fecha_val", date.today()),
+                                          value=fecha_default,
                                           format="DD/MM/YYYY",
                                           disabled=bloqueado,
                                           key="fecha_picker")
+            fecha_picker = fecha_picker if fecha_picker else date.today()
             st.session_state["fecha_val"] = fecha_picker
             fecha_input = fecha_picker.strftime("%d/%m/%Y")
         st.caption("La fecha aplica a todos los contenedores.")

@@ -1,6 +1,6 @@
 """
 ================================================================
-  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA
+  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA 
   Versión Web — Streamlit + Supabase
 ================================================================
 """
@@ -8,8 +8,15 @@
 import streamlit as st
 import pandas as pd
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 import io
 import calendar
+
+ZONA_MX = ZoneInfo("America/Mexico_City")
+
+def hoy_mx():
+    """Retorna la fecha actual en zona horaria de México."""
+    return datetime.now(ZONA_MX).date()
 
 from app.config import COL_BI, COL_TAB
 from app.perfiles import (cargar_perfiles, agregar_perfil, modificar_perfil,
@@ -62,9 +69,9 @@ def init():
         "montos":            {},
         "fecha_solicitud":   None,
         "nc_cliente":        "",
-        "fecha_revision":    date.today(),
-        "cal_anio":          date.today().year,
-        "cal_mes":           date.today().month,
+        "fecha_revision":    hoy_mx(),
+        "cal_anio":          hoy_mx().year,
+        "cal_mes":           hoy_mx().month,
         "mostrar_form_perfil": None,
         "alertas":           [],
         "uploader_key":      0,
@@ -253,11 +260,11 @@ with nav[0]:
 
         with dc2:
             fecha_picker = st.date_input("Fecha Solicitud NC",
-                                          value=date.today(),
+                                          value=hoy_mx(),
                                           format="DD/MM/YYYY",
                                           disabled=bloqueado,
                                           key=f"fecha_picker_{ikey}")
-            fecha_picker = fecha_picker if fecha_picker else date.today()
+            fecha_picker = fecha_picker if fecha_picker else hoy_mx()
             fecha_input = fecha_picker.strftime("%d/%m/%Y")
         st.caption("La fecha aplica a todos los contenedores.")
 
@@ -493,7 +500,7 @@ with nav[0]:
             st.session_state["montos"]          = montos
             st.session_state["fecha_solicitud"] = fecha_sol
             st.session_state["nc_cliente"]      = nc_input.strip()
-            st.session_state["fecha_revision"]  = date.today()
+            st.session_state["fecha_revision"]  = hoy_mx()
             st.session_state["alertas"]         = alertas
             st.session_state["paso"]            = "confirmacion"
             st.rerun()
@@ -655,7 +662,7 @@ with nav[0]:
         st.markdown("<div class='sec-hdr'>Días No Hábiles — Calendario</div>",
                     unsafe_allow_html=True)
 
-        hoy      = date.today()
+        hoy      = hoy_mx()
         festivos = get_festivos_oficiales(st.session_state["cal_anio"])
         meses_es = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
                     "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]

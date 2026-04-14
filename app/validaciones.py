@@ -97,8 +97,28 @@ def validar_archivos(df_tab, df_bi):
 
     df_tab = df_tab.copy()
     df_bi  = df_bi.copy()
+
+    # ── Limpiar filas vacías y leyendas adicionales ────────────
+    # Eliminar filas donde el contenedor esté vacío o sea NaN
+    df_tab = df_tab[df_tab[col_tab].notna()].copy()
+    df_bi  = df_bi[df_bi[col_bi].notna()].copy()
+
+    # Normalizar contenedores
     df_tab[col_tab] = df_tab[col_tab].apply(normalizar_contenedor)
     df_bi[col_bi]   = df_bi[col_bi].apply(normalizar_contenedor)
+
+    # Eliminar filas donde el contenedor quedó vacío después de normalizar
+    df_tab = df_tab[df_tab[col_tab] != ""].copy()
+    df_bi  = df_bi[df_bi[col_bi]  != ""].copy()
+
+    # Eliminar filas donde el contenedor NO cumple el formato válido
+    # (filtra leyendas, totales u otras filas extra al final del archivo)
+    df_tab = df_tab[df_tab[col_tab].apply(validar_formato_contenedor)].copy()
+    df_bi  = df_bi[df_bi[col_bi].apply(validar_formato_contenedor)].copy()
+
+    # Resetear índices
+    df_tab = df_tab.reset_index(drop=True)
+    df_bi  = df_bi.reset_index(drop=True)
 
     for cont in df_tab[col_tab]:
         if cont and not validar_formato_contenedor(cont):

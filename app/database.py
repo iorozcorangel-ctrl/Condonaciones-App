@@ -264,3 +264,107 @@ def eliminar_nc(nc_id: str):
         return True
     except Exception:
         return False
+
+
+# ════════════════════════════════════════════════════════════════
+#   PERFILES DE CONDONACIÓN
+# ════════════════════════════════════════════════════════════════
+
+def obtener_perfiles():
+    """Retorna todos los perfiles ordenados: default primero."""
+    try:
+        db = get_client()
+        res = db.table("perfiles").select("*").order("es_default", desc=True).order("fecha_creacion").execute()
+        data = res.data or []
+        # Convertir a formato compatible con el sistema actual
+        return [{
+            "id":             p["id"],
+            "nombre":         p["nombre"],
+            "es_default":     p["es_default"],
+            "regla1_activa":  p["regla1_activa"],
+            "regla2_activa":  p["regla2_activa"],
+            "dias_previo":    p["dias_previo"],
+            "dias_ferromex":  p["dias_ferromex"],
+            "dias_carretero": p["dias_carretero"],
+        } for p in data]
+    except Exception:
+        # Fallback al perfil default si falla la conexión
+        return [{
+            "nombre": "Default (Sin modificaciones)",
+            "es_default": True,
+            "regla1_activa": True,
+            "regla2_activa": True,
+            "dias_previo": 3,
+            "dias_ferromex": 3,
+            "dias_carretero": 2,
+        }]
+
+
+def crear_perfil_db(perfil: dict):
+    """Crea un nuevo perfil en la base de datos."""
+    try:
+        db = get_client()
+        res = db.table("perfiles").insert({
+            "nombre":         perfil["nombre"],
+            "es_default":     False,
+            "regla1_activa":  perfil.get("regla1_activa", True),
+            "regla2_activa":  perfil.get("regla2_activa", True),
+            "dias_previo":    perfil.get("dias_previo", 3),
+            "dias_ferromex":  perfil.get("dias_ferromex", 3),
+            "dias_carretero": perfil.get("dias_carretero", 2),
+        }).execute()
+        return True, res.data[0] if res.data else {}
+    except Exception as e:
+        return False, str(e)
+
+
+def modificar_perfil_db(perfil_id: str, perfil: dict):
+    """Modifica un perfil existente."""
+    try:
+        db = get_client()
+        db.table("perfiles").update({
+            "nombre":         perfil["nombre"],
+            "regla1_activa":  perfil.get("regla1_activa", True),
+            "regla2_activa":  perfil.get("regla2_activa", True),
+            "dias_previo":    perfil.get("dias_previo", 3),
+            "dias_ferromex":  perfil.get("dias_ferromex", 3),
+            "dias_carretero": perfil.get("dias_carretero", 2),
+        }).eq("id", perfil_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def eliminar_perfil_db(perfil_id: str):
+    """Elimina un perfil de la base de datos."""
+    try:
+        db = get_client()
+        db.table("perfiles").delete().eq("id", perfil_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def guardar_ultimo_perfil_db(usuario_id: str, perfil_id: str):
+    """Guarda el último perfil usado por el usuario."""
+    try:
+        db = get_client()
+        # Usar upsert en tabla usuarios para guardar ultimo_perfil_id
+        db.table("usuarios").update(
+            {"ultimo_perfil_id": perfil_id}
+        ).eq("id", usuario_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def obtener_ultimo_perfil_db(usuario_id: str):
+    """Obtiene el último perfil usado por el usuario."""
+    try:
+        db = get_client()
+        res = db.table("usuarios").select("ultimo_perfil_id").eq("id", usuario_id).execute()
+        if res.data and res.data[0].get("ultimo_perfil_id"):
+            return res.data[0]["ultimo_perfil_id"]
+        return None
+    except Exception:
+        return None

@@ -1,6 +1,6 @@
 """
 ================================================================
-  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA PACÍFICO
+  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA
   Versión Web — Streamlit + Supabase
 ================================================================
 """
@@ -19,9 +19,7 @@ def hoy_mx():
     return datetime.now(ZONA_MX).date()
 
 from app.config import COL_BI, COL_TAB
-from app.perfiles import (cargar_perfiles, agregar_perfil, modificar_perfil,
-                           eliminar_perfil, cargar_ultimo_perfil_usado,
-                           guardar_ultimo_perfil_usado)
+# Perfiles ahora vienen de Supabase via database.py
 from app.calendario import get_festivos_oficiales
 from app.validaciones import (validar_archivos, aplicar_regla1, aplicar_regla2,
                                calcular_desfases, calcular_montos)
@@ -29,7 +27,10 @@ from app.reporte import generar_reporte
 from app.database import (login_usuario, obtener_usuarios, crear_usuario,
                            cambiar_password, toggle_usuario, eliminar_usuario,
                            registrar_nc, verificar_duplicados,
-                           obtener_historial, obtener_detalle_nc, eliminar_nc)
+                           obtener_historial, obtener_detalle_nc, eliminar_nc,
+                           obtener_perfiles, crear_perfil_db, modificar_perfil_db,
+                           eliminar_perfil_db, guardar_ultimo_perfil_db,
+                           obtener_ultimo_perfil_db)
 
 st.set_page_config(
     page_title="Sistema de Condonaciones",
@@ -61,8 +62,9 @@ def init():
         "df_bi":             None,
         "df_tab_v":          None,
         "df_bi_v":           None,
-        "perfiles":          cargar_perfiles(),
-        "perfil_idx":        cargar_ultimo_perfil_usado(),
+        "perfiles":          [],
+        "perfil_idx":        0,
+        "perfiles_cargados": False,
         "dias_especiales":   set(),
         "paso":              "inicio",
         "desfases":          {},
@@ -99,7 +101,7 @@ if st.session_state["usuario"] is None:
         st.markdown("""
         <div style='text-align:center;padding:40px 0 20px;'>
           <h2 style='color:#E65100;'>🚢 Sistema de Condonaciones</h2>
-          <p style='color:#666;'>Terminal Portuaria Pacífico</p>
+          <p style='color:#666;'>Terminal Portuaria</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -125,6 +127,19 @@ if st.session_state["usuario"] is None:
 
 usuario     = st.session_state["usuario"]
 es_admin    = usuario["rol"] == "admin"
+
+# ── Cargar perfiles desde Supabase si no están cargados ────────
+if not st.session_state.get("perfiles_cargados", False):
+    perfiles_db = obtener_perfiles()
+    st.session_state["perfiles"] = perfiles_db
+    st.session_state["perfiles_cargados"] = True
+    # Restaurar último perfil usado
+    ultimo_id = obtener_ultimo_perfil_db(usuario["id"])
+    if ultimo_id:
+        for i, p in enumerate(perfiles_db):
+            if p.get("id") == ultimo_id:
+                st.session_state["perfil_idx"] = i
+                break
 nombre_user = usuario["nombre_completo"]
 rol_badge   = "badge-admin" if es_admin else "badge-user"
 rol_label   = "Administrador" if es_admin else "Usuario"
@@ -180,7 +195,10 @@ with nav[0]:
             nuevo_idx = nombres.index(sel)
             if nuevo_idx != st.session_state["perfil_idx"]:
                 st.session_state["perfil_idx"] = nuevo_idx
-                guardar_ultimo_perfil_usado(nuevo_idx)
+                perfil_sel = perfiles[nuevo_idx]
+                perfil_sel_id = perfil_sel.get("id", "")
+                if perfil_sel_id:
+                    guardar_ultimo_perfil_db(usuario["id"], perfil_sel_id)
         with c2:
             if st.button("➕ Nuevo", use_container_width=True, disabled=bloqueado):
                 st.session_state["mostrar_form_perfil"] = "nuevo"
@@ -191,7 +209,10 @@ with nav[0]:
         with c4:
             if st.button("🗑️", use_container_width=True,
                          disabled=nuevo_idx==0 or bloqueado):
-                st.session_state["perfiles"] = eliminar_perfil(nuevo_idx, perfiles)
+                perfil_id = perfiles[nuevo_idx].get("id", "")
+                if perfil_id:
+                    eliminar_perfil_db(perfil_id)
+                st.session_state["perfiles"].pop(nuevo_idx)
                 st.session_state["perfil_idx"] = 0
                 st.rerun()
 
@@ -216,12 +237,16 @@ with nav[0]:
                                "dias_previo": dp, "dias_ferromex": df,
                                "dias_carretero": dc}
                         if modo == "nuevo":
-                            st.session_state["perfiles"] = agregar_perfil(
-                                np2, st.session_state["perfiles"])
-                            st.session_state["perfil_idx"] = len(st.session_state["perfiles"]) - 1
+                            ok_p, data_p = crear_perfil_db(np2)
+                            if ok_p:
+                                np2["id"] = data_p.get("id", "")
+                                st.session_state["perfiles"].append(np2)
+                                st.session_state["perfil_idx"] = len(st.session_state["perfiles"]) - 1
                         else:
-                            st.session_state["perfiles"] = modificar_perfil(
-                                nuevo_idx, np2, st.session_state["perfiles"])
+                            perfil_id = st.session_state["perfiles"][nuevo_idx].get("id", "")
+                            modificar_perfil_db(perfil_id, np2)
+                            np2["id"] = perfil_id
+                            st.session_state["perfiles"][nuevo_idx] = np2
                         st.session_state["mostrar_form_perfil"] = None
                         st.rerun()
                 if bg2.button("Cancelar", use_container_width=True):

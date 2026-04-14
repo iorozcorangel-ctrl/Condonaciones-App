@@ -1,6 +1,6 @@
 """
 ================================================================
-  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA 
+  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA PACÍFICO
   Versión Web — Streamlit + Supabase
 ================================================================
 """
@@ -99,7 +99,7 @@ if st.session_state["usuario"] is None:
         st.markdown("""
         <div style='text-align:center;padding:40px 0 20px;'>
           <h2 style='color:#E65100;'>🚢 Sistema de Condonaciones</h2>
-          <p style='color:#666;'>Terminal Portuaria</p>
+          <p style='color:#666;'>Terminal Portuaria Pacífico</p>
         </div>
         """, unsafe_allow_html=True)
 
@@ -413,10 +413,20 @@ with nav[0]:
 
             if duplicados:
                 for dup in duplicados:
-                    alertas.append(("duplicado",
-                        f"⚠️ La factura **{dup['factura']}** ya fue registrada "
-                        f"en la NC **{dup['nc_anterior']}** "
-                        f"(fecha: {dup['fecha']}). Verifique antes de continuar."))
+                    if dup["tipo"] == "ERROR":
+                        alertas.append(("warning",
+                            f"⚠️ No se pudo verificar duplicados en el historial: {dup['valor']}"))
+                    elif dup["tipo"] == "Factura":
+                        alertas.append(("duplicado",
+                            f"⚠️ **Factura duplicada:** La factura **{dup['valor']}** "
+                            f"del contenedor **{dup['contenedor']}** ya fue registrada "
+                            f"en la NC **{dup['nc_anterior']}** (fecha: {dup['fecha']}). "
+                            f"Verifique antes de continuar."))
+                    elif dup["tipo"] == "Contenedor":
+                        alertas.append(("duplicado",
+                            f"⚠️ **Contenedor duplicado:** El contenedor **{dup['valor']}** "
+                            f"ya fue registrado en la NC **{dup['nc_anterior']}** "
+                            f"(fecha: {dup['fecha']}). Verifique antes de continuar."))
 
             with st.spinner("Calculando desfases..."):
                 if st.session_state["cond_manual"]:

@@ -160,36 +160,76 @@ def registrar_nc(numero_nc: str, usuario_id: str, usuario_nombre: str,
 
 def verificar_duplicados(contenedores: list, facturas: list):
     """
-    Verifica si alguna factura ya existe en otra NC.
-    Retorna lista de duplicados encontrados: [{factura, nc_anterior}]
+    Verifica si alguna factura o contenedor ya existe en otra NC registrada.
+    Retorna lista de duplicados encontrados.
     """
     duplicados = []
     try:
         db = get_client()
 
-        # Solo verificar por facturas (no por contenedor según definición)
-        facturas_limpias = [str(f) for f in facturas
-                           if f and str(f) not in ("nan", "None", "")]
+        # Limpiar facturas — eliminar nulos, nan, None, vacíos
+        facturas_limpias = []
+        for f in facturas:
+            if f is None:
+                continue
+            s = str(f).strip()
+            if s.lower() in ("nan", "none", "", "0", "0.0"):
+                continue
+            # Limpiar decimales de números que vienen como float
+            if s.endswith(".0"):
+                s = s[:-2]
+            facturas_limpias.append(s)
 
-        if not facturas_limpias:
-            return []
+        # Limpiar contenedores
+        contenedores_limpios = [str(c).strip().upper()
+                                for c in contenedores
+                                if c and str(c).strip().lower() not in ("nan","none","")]
 
-        for factura in facturas_limpias:
+        # ── Verificar por factura ──────────────────────────────
+        facturas_unicas = list(set(facturas_limpias))
+        for factura in facturas_unicas:
             res = db.table("detalle_nc").select(
-                "numero_factura, numero_nc, fecha_creacion"
+                "numero_factura, numero_nc, fecha_creacion, contenedor"
             ).eq("numero_factura", factura).execute()
 
             if res.data:
                 for reg in res.data:
                     duplicados.append({
-                        "factura":     factura,
+                        "tipo":        "Factura",
+                        "valor":       factura,
                         "nc_anterior": reg["numero_nc"],
+                        "contenedor":  reg.get("contenedor", ""),
                         "fecha":       reg["fecha_creacion"][:10] if reg["fecha_creacion"] else ""
                     })
 
+        # ── Verificar por contenedor ───────────────────────────
+        contenedores_unicos = list(set(contenedores_limpios))
+        for cont in contenedores_unicos:
+            res = db.table("detalle_nc").select(
+                "contenedor, numero_nc, fecha_creacion, numero_factura"
+            ).eq("contenedor", cont).execute()
+
+            if res.data:
+                for reg in res.data:
+                    # Evitar duplicar si ya se detectó por factura
+                    ya_registrado = any(
+                        d["nc_anterior"] == reg["numero_nc"] and d["valor"] == cont
+                        for d in duplicados
+                    )
+                    if not ya_registrado:
+                        duplicados.append({
+                            "tipo":        "Contenedor",
+                            "valor":       cont,
+                            "nc_anterior": reg["numero_nc"],
+                            "contenedor":  cont,
+                            "fecha":       reg["fecha_creacion"][:10] if reg["fecha_creacion"] else ""
+                        })
+
         return duplicados
-    except Exception:
-        return []
+
+    except Exception as e:
+        # Retornar el error para que pueda mostrarse en la interfaz
+        return [{"tipo": "ERROR", "valor": str(e), "nc_anterior": "", "contenedor": "", "fecha": ""}]
 
 
 def obtener_historial(limite: int = 2000):

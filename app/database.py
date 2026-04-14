@@ -139,15 +139,30 @@ def registrar_nc(numero_nc: str, usuario_id: str, usuario_nombre: str,
 
         nc_id = res.data[0]["id"]
 
-        # Insertar detalles por contenedor
+        # Insertar detalles por contenedor — solo filas con contenedor válido
         detalles = []
         for i, cont in enumerate(contenedores):
+            # Limpiar contenedor
+            cont_limpio = str(cont).strip().upper() if cont else ""
+            if not cont_limpio or cont_limpio.lower() in ("nan", "none", ""):
+                continue
+
+            # Limpiar factura — quitar decimales si viene como float
             factura = facturas[i] if i < len(facturas) else None
+            if factura is not None:
+                factura_str = str(factura).strip()
+                if factura_str.lower() in ("nan", "none", "", "0", "0.0"):
+                    factura_str = None
+                elif factura_str.endswith(".0"):
+                    factura_str = factura_str[:-2]
+            else:
+                factura_str = None
+
             detalles.append({
                 "historial_nc_id": nc_id,
                 "numero_nc":       numero_nc,
-                "contenedor":      cont,
-                "numero_factura":  str(factura) if factura and str(factura) not in ("nan", "None", "") else None,
+                "contenedor":      cont_limpio,
+                "numero_factura":  factura_str,
             })
 
         if detalles:

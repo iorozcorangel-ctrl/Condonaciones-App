@@ -112,9 +112,34 @@ def validar_archivos(df_tab, df_bi):
     df_bi  = df_bi[df_bi[col_bi]  != ""].copy()
 
     # Eliminar filas donde el contenedor NO cumple el formato válido
-    # (filtra leyendas, totales u otras filas extra al final del archivo)
     df_tab = df_tab[df_tab[col_tab].apply(validar_formato_contenedor)].copy()
     df_bi  = df_bi[df_bi[col_bi].apply(validar_formato_contenedor)].copy()
+
+    # ── Consolidar duplicados en Tabulador Comercial ───────────────
+    # Si un contenedor aparece más de una vez, sumar IMPORTE y
+    # concatenar CONCEPTOS A CONDONAR separados por coma
+    col_importe   = COL_TAB.get("importe",   "IMPORTE SIN IVA A CONDONAR")
+    col_conceptos = COL_TAB.get("conceptos", "CONCEPTOS A CONDONAR")
+
+    if df_tab[col_tab].duplicated().any():
+        agg_dict = {}
+        for col in df_tab.columns:
+            if col == col_tab:
+                continue
+            elif col == col_importe:
+                agg_dict[col] = "sum"
+            elif col == col_conceptos:
+                agg_dict[col] = lambda x: ", ".join(
+                    str(v) for v in x if pd.notna(v) and str(v).strip() not in ("", "nan")
+                )
+            else:
+                agg_dict[col] = "first"
+
+        df_tab = df_tab.groupby(col_tab, as_index=False, sort=False).agg(agg_dict)
+        advertencias.append(
+            f"Se detectaron contenedores duplicados en el Tabulador Comercial. "
+            f"Se consolidaron automáticamente sumando el importe y concatenando los conceptos."
+        )
 
     # Resetear índices
     df_tab = df_tab.reset_index(drop=True)

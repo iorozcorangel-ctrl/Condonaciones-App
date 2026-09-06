@@ -301,6 +301,9 @@ def obtener_perfiles():
             "dias_previo":    p["dias_previo"],
             "dias_ferromex":  p["dias_ferromex"],
             "dias_carretero": p["dias_carretero"],
+            "na_previo":      p.get("na_previo", False),
+            "na_ffcc":        p.get("na_ffcc", False),
+            "na_carretero":   p.get("na_carretero", False),
         } for p in data]
     except Exception:
         # Fallback al perfil default si falla la conexión
@@ -327,6 +330,9 @@ def crear_perfil_db(perfil: dict):
             "dias_previo":    perfil.get("dias_previo", 3),
             "dias_ferromex":  perfil.get("dias_ferromex", 3),
             "dias_carretero": perfil.get("dias_carretero", 2),
+            "na_previo":      perfil.get("na_previo", False),
+            "na_ffcc":        perfil.get("na_ffcc", False),
+            "na_carretero":   perfil.get("na_carretero", False),
         }).execute()
         return True, res.data[0] if res.data else {}
     except Exception as e:
@@ -344,6 +350,9 @@ def modificar_perfil_db(perfil_id: str, perfil: dict):
             "dias_previo":    perfil.get("dias_previo", 3),
             "dias_ferromex":  perfil.get("dias_ferromex", 3),
             "dias_carretero": perfil.get("dias_carretero", 2),
+            "na_previo":      perfil.get("na_previo", False),
+            "na_ffcc":        perfil.get("na_ffcc", False),
+            "na_carretero":   perfil.get("na_carretero", False),
         }).eq("id", perfil_id).execute()
         return True
     except Exception:

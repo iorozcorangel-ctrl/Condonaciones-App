@@ -100,10 +100,9 @@ init()
 # ════════════════════════════════════════════════════════════════
 #   PANTALLA DE LOGIN
 # ════════════════════════════════════════════════════════════════
-if st.session_state["usuario"] is None:
-    # ── Intentar restaurar sesión desde cookie ──────────────────────
+# ── Intentar restaurar sesión desde cookie ─────────────────────
 cookie_manager = get_cookie_manager()
-if not st.session_state.get("autenticado"):
+if not st.session_state.get("autenticado") or st.session_state["usuario"] is None:
     try:
         cookie_user  = cookie_manager.get("session_user")
         cookie_token = cookie_manager.get("session_token")
@@ -124,42 +123,42 @@ if not st.session_state.get("autenticado"):
 
 c1, c2, c3 = st.columns([1, 2, 1])
 with c2:
-        st.markdown("""
-        <div style='text-align:center;padding:40px 0 20px;'>
-          <h2 style='color:#E65100;'>🚢 Sistema de Condonaciones</h2>
-          <p style='color:#666;'>Terminal Portuaria Pacífico</p>
-        </div>
-        """, unsafe_allow_html=True)
+    st.markdown("""
+    <div style='text-align:center;padding:40px 0 20px;'>
+      <h2 style='color:#E65100;'>🚢 Sistema de Condonaciones</h2>
+      <p style='color:#666;'>Terminal Portuaria Pacífico</p>
+    </div>
+    """, unsafe_allow_html=True)
 
-        with st.form("login"):
-            username = st.text_input("Usuario", placeholder="Ingresa tu usuario")
-            password = st.text_input("Contraseña", type="password")
-            recordar = st.checkbox("Mantener sesión iniciada (7 días)", value=True)
-            if st.form_submit_button("Entrar", use_container_width=True):
-                if not username or not password:
-                    st.warning("Ingresa usuario y contraseña")
+    with st.form("login"):
+        username = st.text_input("Usuario", placeholder="Ingresa tu usuario")
+        password = st.text_input("Contraseña", type="password")
+        recordar = st.checkbox("Mantener sesión iniciada (7 días)", value=True)
+        if st.form_submit_button("Entrar", use_container_width=True):
+            if not username or not password:
+                st.warning("Ingresa usuario y contraseña")
+            else:
+                with st.spinner("Verificando..."):
+                    usuario = login_usuario(username, password)
+                if usuario:
+                    st.session_state["autenticado"] = True
+                    st.session_state["usuario"]     = usuario
+                    if recordar:
+                        token = hashlib.sha256(
+                            f"condonaciones_{username}_2026".encode()
+                        ).hexdigest()[:16]
+                        expiry = datetime.now() + timedelta(days=7)
+                        try:
+                            cookie_manager.set("session_user", username,
+                                               expires_at=expiry)
+                            cookie_manager.set("session_token", token,
+                                               expires_at=expiry)
+                        except Exception:
+                            pass
+                    st.rerun()
                 else:
-                    with st.spinner("Verificando..."):
-                        usuario = login_usuario(username, password)
-                    if usuario:
-                        st.session_state["autenticado"] = True
-                        st.session_state["usuario"]     = usuario
-                        if recordar:
-                            token = hashlib.sha256(
-                                f"condonaciones_{username}_2026".encode()
-                            ).hexdigest()[:16]
-                            expiry = datetime.now() + timedelta(days=7)
-                            try:
-                                cookie_manager.set("session_user", username,
-                                                   expires_at=expiry)
-                                cookie_manager.set("session_token", token,
-                                                   expires_at=expiry)
-                            except Exception:
-                                pass
-                        st.rerun()
-                    else:
-                        st.error("Usuario o contraseña incorrectos")
-    st.stop()
+                    st.error("Usuario o contraseña incorrectos")
+st.stop()
 
 # ════════════════════════════════════════════════════════════════
 #   APP PRINCIPAL — Usuario autenticado

@@ -145,7 +145,6 @@ def validar_archivos(df_tab, df_bi):
     # Si un contenedor aparece más de una vez (por múltiples facturas),
     # concatenar facturas y sumar montos
     if df_bi[col_bi].duplicated().any():
-        from app.config import COL_BI
 
         # Campos que se SUMAN (cantidades y montos)
         campos_suma = [

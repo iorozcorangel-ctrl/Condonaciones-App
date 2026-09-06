@@ -215,7 +215,8 @@ def generar_reporte(df_tab, df_bi, desfases, montos, fecha_solicitud_global,
         fc = to_date(bi_val("fecha_cancel"))
         _dat(ws, data_row, c, fc if fc else "N/A", fmt_date=bool(fc));                  c += 1
         _dat(ws, data_row, c, to_int(bi_val("no_services_order")));                     c += 1
-        _dat(ws, data_row, c, dp if dp > 0 else 0);                                    c += 1
+        dp_val = "NA" if d.get("na_previo") else (dp if dp > 0 else 0)
+        _dat(ws, data_row, c, dp_val);                                                   c += 1
         _dat(ws, data_row, c, dias_intento if dias_intento is not None else "N/A");     c += 1
         fl = to_date(bi_val("fecha_liberacion"))
         _dat(ws, data_row, c, fl if fl else "N/A", fmt_date=bool(fl));                  c += 1
@@ -224,7 +225,8 @@ def generar_reporte(df_tab, df_bi, desfases, montos, fecha_solicitud_global,
         ffm = to_date(bi_val("fecha_ferromex"))
         _dat(ws, data_row, c, ffm if ffm else "N/A", fmt_date=bool(ffm));               c += 1
         _dat(ws, data_row, c, bi_val("dia_ferromex") if ffm else "N/A");                c += 1
-        _dat(ws, data_row, c, paso_ffcc);                                               c += 1
+        paso_ffcc_val = "NA" if d.get("na_ffcc") else paso_ffcc
+        _dat(ws, data_row, c, paso_ffcc_val);                                            c += 1
         fg = to_date(bi_val("fecha_gondola"))
         _dat(ws, data_row, c, fg if fg else "N/A", fmt_date=bool(fg));                  c += 1
         _dat(ws, data_row, c, bi_val("dia_gondola") if fg else "N/A");                  c += 1
@@ -237,11 +239,13 @@ def generar_reporte(df_tab, df_bi, desfases, montos, fecha_solicitud_global,
         fce = to_date(bi_val("fecha_cmsa_entrega"))
         _dat(ws, data_row, c, fce if fce else "N/A", fmt_date=bool(fce));               c += 1
         _dat(ws, data_row, c, bi_val("dia_entrega_cmsa") if fce else "N/A");            c += 1
-        _dat(ws, data_row, c, paso_carretero);                                          c += 1
+        paso_carr_val = "NA" if d.get("na_carretero") else paso_carretero
+        _dat(ws, data_row, c, paso_carr_val);                                            c += 1
         to_val = to_date(bi_val("time_out"))
         _dat(ws, data_row, c, to_val if to_val else "N/A", fmt_date=bool(to_val));      c += 1
         _dat(ws, data_row, c, bi_val("dia_time_out") if to_val else "N/A");             c += 1
-        _dat(ws, data_row, c, dc if dc > 0 else 0);                                    c += 1
+        dc_val = "NA" if d.get("na_carretero") else (dc if dc > 0 else 0)
+        _dat(ws, data_row, c, dc_val);                                                   c += 1
         _dat(ws, data_row, c, comentario);                                              c += 1
         _dat(ws, data_row, c, bi_val("tipo_contenedor"));                               c += 1
         def to_si_no(val):

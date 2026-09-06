@@ -155,7 +155,17 @@ es_admin    = usuario["rol"] == "admin"
 # ── Cargar perfiles desde Supabase si no están cargados ────────
 if not st.session_state.get("perfiles_cargados", False):
     perfiles_db = obtener_perfiles()
-    st.session_state["perfiles"] = perfiles_db
+    # Deduplicar: si hay más de un Default, conservar solo el primero
+    vistos_default = False
+    perfiles_unicos = []
+    for p in perfiles_db:
+        if p.get("es_default"):
+            if not vistos_default:
+                perfiles_unicos.append(p)
+                vistos_default = True
+        else:
+            perfiles_unicos.append(p)
+    st.session_state["perfiles"] = perfiles_unicos
     st.session_state["perfiles_cargados"] = True
     # Restaurar último perfil usado
     ultimo_id = obtener_ultimo_perfil_db(usuario["id"])
@@ -256,16 +266,31 @@ with nav[0]:
                 r2 = st.checkbox("Aplicar regla 4 días (Regla 2)",
                                   value=p.get("regla2_activa", True))
                 pc1, pc2, pc3 = st.columns(3)
-                dp = pc1.number_input("Días previo (R3)", 1, 30, p.get("dias_previo", 3))
-                df = pc2.number_input("Días FFCC (R4)",   1, 30, p.get("dias_ferromex", 3))
-                dc = pc3.number_input("Días carretero (R5)", 1, 30, p.get("dias_carretero", 2))
+                na_p = pc1.checkbox("R3: No aplica previo",
+                                    value=p.get("na_previo", False))
+                na_f = pc2.checkbox("R4: No aplica FFCC",
+                                    value=p.get("na_ffcc", False))
+                na_c = pc3.checkbox("R5: No aplica carretero",
+                                    value=p.get("na_carretero", False))
+                pc4, pc5, pc6 = st.columns(3)
+                dp = pc4.number_input("Días previo (R3)", 1, 30,
+                                       p.get("dias_previo", 3),
+                                       disabled=na_p)
+                df = pc5.number_input("Días FFCC (R4)", 1, 30,
+                                       p.get("dias_ferromex", 3),
+                                       disabled=na_f)
+                dc = pc6.number_input("Días carretero (R5)", 1, 30,
+                                       p.get("dias_carretero", 2),
+                                       disabled=na_c)
                 bg1, bg2 = st.columns(2)
                 if bg1.button("💾 Guardar", use_container_width=True):
                     if nombre_p:
                         np2 = {"nombre": nombre_p, "es_default": False,
                                "regla1_activa": r1, "regla2_activa": r2,
                                "dias_previo": dp, "dias_ferromex": df,
-                               "dias_carretero": dc}
+                               "dias_carretero": dc,
+                               "na_previo": na_p, "na_ffcc": na_f,
+                               "na_carretero": na_c}
                         if modo == "nuevo":
                             ok_p, data_p = crear_perfil_db(np2)
                             if ok_p:
@@ -285,20 +310,20 @@ with nav[0]:
 
         # ── Resumen informativo del perfil ────────────────────
         perfil_activo = st.session_state["perfiles"][nuevo_idx]
-        r1_txt = "✅ Activa" if perfil_activo.get("regla1_activa", True) else "❌ Desactivada"
-        r2_txt = "✅ Activa" if perfil_activo.get("regla2_activa", True) else "❌ Desactivada"
-        dp_txt = perfil_activo.get("dias_previo",    3)
-        df_txt = perfil_activo.get("dias_ferromex",  3)
-        dc_txt = perfil_activo.get("dias_carretero", 2)
+        r1_txt  = "✅ Activa" if perfil_activo.get("regla1_activa", True) else "❌ Desactivada"
+        r2_txt  = "✅ Activa" if perfil_activo.get("regla2_activa", True) else "❌ Desactivada"
+        dp_txt  = "🚫 No aplica" if perfil_activo.get("na_previo", False) else f"{perfil_activo.get('dias_previo', 3)} días hábiles"
+        df_txt  = "🚫 No aplica" if perfil_activo.get("na_ffcc", False) else f"{perfil_activo.get('dias_ferromex', 3)} días naturales"
+        dc_txt  = "🚫 No aplica" if perfil_activo.get("na_carretero", False) else f"{perfil_activo.get('dias_carretero', 2)} días hábiles"
         st.markdown(f"""
         <div style='background:#FFF3E0;border-left:4px solid #E65100;padding:10px 14px;
                     border-radius:4px;font-size:13px;color:#555;margin-bottom:8px;'>
         <b>Configuración del perfil activo:</b><br>
         📅 <b>Regla 1</b> — Validación 30 días naturales: {r1_txt}<br>
         📅 <b>Regla 2</b> — Validación primeros 4 días: {r2_txt}<br>
-        🔄 <b>Regla 3</b> — Plazo para posicionamiento de previo: <b>{dp_txt} días hábiles</b> (Lun–Sáb)<br>
-        🚂 <b>Regla 4</b> — Plazo para carga a góndola FFCC: <b>{df_txt} días naturales</b><br>
-        🚚 <b>Regla 5</b> — Plazo para entrega carretero: <b>{dc_txt} días hábiles</b> (excepto Sáb si programó Jue/Vie)
+        🔄 <b>Regla 3</b> — Plazo para posicionamiento de previo: <b>{dp_txt}</b><br>
+        🚂 <b>Regla 4</b> — Plazo para carga a góndola FFCC: <b>{df_txt}</b><br>
+        🚚 <b>Regla 5</b> — Plazo para entrega carretero: <b>{dc_txt}</b>
         </div>
         """, unsafe_allow_html=True)
 
@@ -484,6 +509,8 @@ with nav[0]:
                             f"(fecha: {dup['fecha']}). Verifique antes de continuar."))
 
             with st.spinner("Calculando desfases..."):
+                # Aplicar NA del perfil
+                perfil_act = st.session_state["perfiles"][st.session_state["perfil_idx"]]
                 if st.session_state["cond_manual"]:
                     dp_m = int(st.session_state["dias_manual_previo"])
                     df_m = int(st.session_state["dias_manual_ffcc"])
@@ -495,20 +522,41 @@ with nav[0]:
                     # Construir desfases manuales por contenedor
                     desfases = {}
                     for _, row in df_bv.iterrows():
-                        cont = row[COL_BI["contenedor"]]
+                        cont   = row[COL_BI["contenedor"]]
+                        dp_fin = 0 if perfil_act.get("na_previo", False) else dp_m
+                        df_fin = 0 if perfil_act.get("na_ffcc", False)   else df_m
+                        dc_fin = 0 if perfil_act.get("na_carretero", False) else dc_m
                         desfases[cont] = {
-                            "desfase_previo":    dp_m,
-                            "desfase_ffcc":      df_m,
-                            "desfase_carretero": dc_m,
-                            "total_desfase":     dp_m + df_m + dc_m,
+                            "desfase_previo":    dp_fin,
+                            "desfase_ffcc":      df_fin,
+                            "desfase_carretero": dc_fin,
+                            "total_desfase":     dp_fin + df_fin + dc_fin,
                             "es_manual":         True,
+                            "na_previo":         perfil_act.get("na_previo", False),
+                            "na_ffcc":           perfil_act.get("na_ffcc", False),
+                            "na_carretero":      perfil_act.get("na_carretero", False),
                         }
                 else:
                     desfases = calcular_desfases(
                         df_bv, st.session_state["dias_especiales"], perfil
                     )
                     for cont in desfases:
-                        desfases[cont]["es_manual"] = False
+                        desfases[cont]["es_manual"]    = False
+                        desfases[cont]["na_previo"]    = perfil_act.get("na_previo", False)
+                        desfases[cont]["na_ffcc"]      = perfil_act.get("na_ffcc", False)
+                        desfases[cont]["na_carretero"] = perfil_act.get("na_carretero", False)
+                        # Aplicar NA: poner 0 en los conceptos que no aplican
+                        if desfases[cont]["na_previo"]:
+                            desfases[cont]["desfase_previo"] = 0
+                        if desfases[cont]["na_ffcc"]:
+                            desfases[cont]["desfase_ffcc"] = 0
+                        if desfases[cont]["na_carretero"]:
+                            desfases[cont]["desfase_carretero"] = 0
+                        desfases[cont]["total_desfase"] = (
+                            desfases[cont]["desfase_previo"] +
+                            desfases[cont]["desfase_ffcc"] +
+                            desfases[cont]["desfase_carretero"]
+                        )
 
             with st.spinner("Calculando montos..."):
                 montos = calcular_montos(df_bv, desfases)

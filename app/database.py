@@ -383,3 +383,66 @@ def obtener_ultimo_perfil_db(usuario_id: str):
         return None
     except Exception:
         return None
+
+
+# ════════════════════════════════════════════════════════════════
+#   GESTIÓN DE SESIONES PERSISTENTES
+# ════════════════════════════════════════════════════════════════
+
+def crear_sesion(usuario_id: str, username: str) -> str:
+    """Crea una sesión en BD y retorna el token."""
+    import secrets
+    from datetime import datetime, timedelta
+    try:
+        db    = get_client()
+        token = secrets.token_hex(32)
+        expira = datetime.utcnow() + timedelta(days=7)
+        # Limpiar sesiones anteriores del usuario
+        db.table("sesiones").delete().eq("usuario_id", usuario_id).execute()
+        db.table("sesiones").insert({
+            "usuario_id": usuario_id,
+            "token":      token,
+            "username":   username,
+            "expira_en":  expira.isoformat(),
+        }).execute()
+        return token
+    except Exception:
+        return ""
+
+
+def verificar_sesion(token: str):
+    """Verifica un token de sesión. Retorna el usuario o None."""
+    from datetime import datetime
+    if not token:
+        return None
+    try:
+        db  = get_client()
+        res = db.table("sesiones").select(
+            "usuario_id, username, expira_en"
+        ).eq("token", token).execute()
+        if not res.data:
+            return None
+        sesion = res.data[0]
+        # Verificar expiración
+        expira = datetime.fromisoformat(sesion["expira_en"].replace("Z", ""))
+        if datetime.utcnow() > expira:
+            db.table("sesiones").delete().eq("token", token).execute()
+            return None
+        # Obtener usuario completo
+        res2 = db.table("usuarios").select("*").eq(
+            "id", sesion["usuario_id"]
+        ).eq("activo", True).execute()
+        return res2.data[0] if res2.data else None
+    except Exception:
+        return None
+
+
+def eliminar_sesion(token: str):
+    """Elimina una sesión (logout)."""
+    if not token:
+        return
+    try:
+        db = get_client()
+        db.table("sesiones").delete().eq("token", token).execute()
+    except Exception:
+        pass

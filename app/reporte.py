@@ -214,7 +214,7 @@ def generar_reporte(df_tab, df_bi, desfases, montos, fecha_solicitud_global,
         _dat(ws, data_row, c, bi_val("dia_posicion") if fp2 else "N/A");                c += 1
         fc = to_date(bi_val("fecha_cancel"))
         _dat(ws, data_row, c, fc if fc else "N/A", fmt_date=bool(fc));                  c += 1
-        _dat(ws, data_row, c, to_int(bi_val("no_services_order")));                     c += 1
+        _dat(ws, data_row, c, to_int(bi_val("no_servicios")));                         c += 1
         dp_val = "NA" if d.get("na_previo") else (dp if dp > 0 else 0)
         _dat(ws, data_row, c, dp_val);                                                   c += 1
         _dat(ws, data_row, c, dias_intento if dias_intento is not None else "N/A");     c += 1

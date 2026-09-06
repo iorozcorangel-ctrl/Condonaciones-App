@@ -96,31 +96,32 @@ init()
 # ════════════════════════════════════════════════════════════════
 #   PANTALLA DE LOGIN
 # ════════════════════════════════════════════════════════════════
-c1, c2, c3 = st.columns([1, 2, 1])
-with c2:
-    st.markdown("""
-    <div style='text-align:center;padding:40px 0 20px;'>
-      <h2 style='color:#E65100;'>🚢 Sistema de Condonaciones</h2>
-      <p style='color:#666;'>Terminal Portuaria Pacífico</p>
-    </div>
-    """, unsafe_allow_html=True)
+if not st.session_state.get("autenticado") or st.session_state.get("usuario") is None:
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        st.markdown("""
+        <div style='text-align:center;padding:40px 0 20px;'>
+          <h2 style='color:#E65100;'>🚢 Sistema de Condonaciones</h2>
+          <p style='color:#666;'>Terminal Portuaria Pacífico</p>
+        </div>
+        """, unsafe_allow_html=True)
 
-    with st.form("login"):
-        username = st.text_input("Usuario", placeholder="Ingresa tu usuario")
-        password = st.text_input("Contraseña", type="password")
-        if st.form_submit_button("Entrar", use_container_width=True):
-            if not username or not password:
-                st.warning("Ingresa usuario y contraseña")
-            else:
-                with st.spinner("Verificando..."):
-                    usuario = login_usuario(username, password)
-                if usuario:
-                    st.session_state["autenticado"] = True
-                    st.session_state["usuario"]     = usuario
-                    st.rerun()
+        with st.form("login"):
+            username = st.text_input("Usuario", placeholder="Ingresa tu usuario")
+            password = st.text_input("Contraseña", type="password")
+            if st.form_submit_button("Entrar", use_container_width=True):
+                if not username or not password:
+                    st.warning("Ingresa usuario y contraseña")
                 else:
-                    st.error("Usuario o contraseña incorrectos")
-st.stop()
+                    with st.spinner("Verificando..."):
+                        usuario = login_usuario(username, password)
+                    if usuario:
+                        st.session_state["autenticado"] = True
+                        st.session_state["usuario"]     = usuario
+                        st.rerun()
+                    else:
+                        st.error("Usuario o contraseña incorrectos")
+    st.stop()
 
 # ════════════════════════════════════════════════════════════════
 #   APP PRINCIPAL — Usuario autenticado

@@ -12,6 +12,12 @@ from zoneinfo import ZoneInfo
 import io
 import calendar
 import hashlib
+from datetime import timedelta
+try:
+    import extra_streamlit_components as stx
+    COOKIES_DISPONIBLES = True
+except Exception:
+    COOKIES_DISPONIBLES = False
 
 ZONA_MX = ZoneInfo("America/Mexico_City")
 
@@ -91,7 +97,37 @@ def init():
         if k not in st.session_state:
             st.session_state[k] = v
 
+# ── Cookie manager — debe inicializarse antes que todo ─────────
+_cookie_mgr = None
+if COOKIES_DISPONIBLES:
+    try:
+        _cookie_mgr = stx.CookieManager(key="cm_condonaciones")
+    except Exception:
+        _cookie_mgr = None
+
 init()
+
+# ── Restaurar sesión desde cookie si existe ─────────────────────
+if _cookie_mgr and not st.session_state.get("autenticado"):
+    try:
+        c_user  = _cookie_mgr.get("c_user")
+        c_token = _cookie_mgr.get("c_token")
+        if c_user and c_token:
+            esperado = hashlib.sha256(
+                f"cond_{c_user}_2026".encode()
+            ).hexdigest()[:20]
+            if c_token == esperado:
+                from app.database import obtener_usuarios as _gu
+                match = next(
+                    (u for u in _gu() if u["username"] == c_user and u["activo"]),
+                    None
+                )
+                if match:
+                    st.session_state["autenticado"] = True
+                    st.session_state["usuario"]     = match
+                    st.rerun()
+    except Exception:
+        pass
 
 # ════════════════════════════════════════════════════════════════
 #   PANTALLA DE LOGIN
@@ -118,6 +154,17 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
                     if usuario:
                         st.session_state["autenticado"] = True
                         st.session_state["usuario"]     = usuario
+                        # Guardar cookie de sesión por 7 días
+                        if _cookie_mgr:
+                            try:
+                                tok = hashlib.sha256(
+                                    f"cond_{username}_2026".encode()
+                                ).hexdigest()[:20]
+                                exp = datetime.now() + timedelta(days=7)
+                                _cookie_mgr.set("c_user",  username, expires_at=exp)
+                                _cookie_mgr.set("c_token", tok,      expires_at=exp)
+                            except Exception:
+                                pass
                         st.rerun()
                     else:
                         st.error("Usuario o contraseña incorrectos")
@@ -164,6 +211,12 @@ with col_user:
     </div>
     """, unsafe_allow_html=True)
     if st.button("🚪 Salir", use_container_width=True):
+        if _cookie_mgr:
+            try:
+                _cookie_mgr.delete("c_user")
+                _cookie_mgr.delete("c_token")
+            except Exception:
+                pass
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.rerun()

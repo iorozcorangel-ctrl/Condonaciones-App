@@ -1,16 +1,21 @@
 """
 ================================================================
-  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA
+  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA PACÍFICO
   Versión Web — Streamlit + Supabase
 ================================================================
 """
 
 import streamlit as st
 import pandas as pd
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 import io
 import calendar
+import extra_streamlit_components as stx
+import hashlib
+
+def get_cookie_manager():
+    return stx.CookieManager(key="session_cookies")
 
 ZONA_MX = ZoneInfo("America/Mexico_City")
 
@@ -96,18 +101,40 @@ init()
 #   PANTALLA DE LOGIN
 # ════════════════════════════════════════════════════════════════
 if st.session_state["usuario"] is None:
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c2:
+    # ── Intentar restaurar sesión desde cookie ──────────────────────
+cookie_manager = get_cookie_manager()
+if not st.session_state.get("autenticado"):
+    try:
+        cookie_user  = cookie_manager.get("session_user")
+        cookie_token = cookie_manager.get("session_token")
+        if cookie_user and cookie_token:
+            expected = hashlib.sha256(
+                f"condonaciones_{cookie_user}_2026".encode()
+            ).hexdigest()[:16]
+            if cookie_token == expected:
+                from app.database import obtener_usuarios as _get_users
+                match = next((u for u in _get_users()
+                              if u["username"] == cookie_user and u["activo"]), None)
+                if match:
+                    st.session_state["autenticado"] = True
+                    st.session_state["usuario"]     = match
+                    st.rerun()
+    except Exception:
+        pass
+
+c1, c2, c3 = st.columns([1, 2, 1])
+with c2:
         st.markdown("""
         <div style='text-align:center;padding:40px 0 20px;'>
           <h2 style='color:#E65100;'>🚢 Sistema de Condonaciones</h2>
-          <p style='color:#666;'>Terminal Portuaria</p>
+          <p style='color:#666;'>Terminal Portuaria Pacífico</p>
         </div>
         """, unsafe_allow_html=True)
 
         with st.form("login"):
             username = st.text_input("Usuario", placeholder="Ingresa tu usuario")
             password = st.text_input("Contraseña", type="password")
+            recordar = st.checkbox("Mantener sesión iniciada (7 días)", value=True)
             if st.form_submit_button("Entrar", use_container_width=True):
                 if not username or not password:
                     st.warning("Ingresa usuario y contraseña")
@@ -115,7 +142,20 @@ if st.session_state["usuario"] is None:
                     with st.spinner("Verificando..."):
                         usuario = login_usuario(username, password)
                     if usuario:
-                        st.session_state["usuario"] = usuario
+                        st.session_state["autenticado"] = True
+                        st.session_state["usuario"]     = usuario
+                        if recordar:
+                            token = hashlib.sha256(
+                                f"condonaciones_{username}_2026".encode()
+                            ).hexdigest()[:16]
+                            expiry = datetime.now() + timedelta(days=7)
+                            try:
+                                cookie_manager.set("session_user", username,
+                                                   expires_at=expiry)
+                                cookie_manager.set("session_token", token,
+                                                   expires_at=expiry)
+                            except Exception:
+                                pass
                         st.rerun()
                     else:
                         st.error("Usuario o contraseña incorrectos")
@@ -162,6 +202,12 @@ with col_user:
     </div>
     """, unsafe_allow_html=True)
     if st.button("🚪 Salir", use_container_width=True):
+        # Limpiar cookies de sesión
+        try:
+            cookie_manager.delete("session_user")
+            cookie_manager.delete("session_token")
+        except Exception:
+            pass
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.rerun()

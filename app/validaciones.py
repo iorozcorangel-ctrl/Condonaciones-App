@@ -141,6 +141,55 @@ def validar_archivos(df_tab, df_bi):
             f"Se consolidaron automáticamente sumando el importe y concatenando los conceptos."
         )
 
+    # ── Consolidar duplicados en Archivo BI ───────────────────────
+    # Si un contenedor aparece más de una vez (por múltiples facturas),
+    # concatenar facturas y sumar montos
+    if df_bi[col_bi].duplicated().any():
+        from app.config import COL_BI
+
+        # Campos que se SUMAN (cantidades y montos)
+        campos_suma = [
+            COL_BI.get("alm_qty"),
+            COL_BI.get("alm_subtotal"),
+            COL_BI.get("energia_qty"),
+            COL_BI.get("energia_subtotal"),
+            COL_BI.get("no_show_qty"),
+            COL_BI.get("no_show_subtotal"),
+            COL_BI.get("admon_qty"),
+            COL_BI.get("admon_subtotal"),
+            COL_BI.get("remanejo_qty"),
+            COL_BI.get("remanejo_subtotal"),
+        ]
+        campos_suma = [c for c in campos_suma if c and c in df_bi.columns]
+
+        # Campos que se CONCATENAN con coma
+        campos_concat = [
+            COL_BI.get("no_factura"),
+        ]
+        campos_concat = [c for c in campos_concat if c and c in df_bi.columns]
+
+        agg_bi = {}
+        for col in df_bi.columns:
+            if col == col_bi:
+                continue
+            elif col in campos_suma:
+                agg_bi[col] = "sum"
+            elif col in campos_concat:
+                agg_bi[col] = lambda x: ", ".join(
+                    str(v) for v in x
+                    if pd.notna(v) and str(v).strip() not in ("", "nan", "None")
+                    and not str(v).strip().endswith(".0")
+                    and str(v).strip() != "0"
+                ) or None
+            else:
+                agg_bi[col] = "first"
+
+        df_bi = df_bi.groupby(col_bi, as_index=False, sort=False).agg(agg_bi)
+        advertencias.append(
+            f"Se detectaron contenedores duplicados en el Archivo BI. "
+            f"Se consolidaron automáticamente concatenando facturas y sumando montos."
+        )
+
     # Resetear índices
     df_tab = df_tab.reset_index(drop=True)
     df_bi  = df_bi.reset_index(drop=True)

@@ -31,7 +31,9 @@ from app.database import (login_usuario, obtener_usuarios, crear_usuario,
                            obtener_historial, obtener_detalle_nc, eliminar_nc,
                            obtener_perfiles, crear_perfil_db, modificar_perfil_db,
                            eliminar_perfil_db, guardar_ultimo_perfil_db,
-                           obtener_ultimo_perfil_db)
+                           obtener_ultimo_perfil_db,
+                           guardar_previo_borrador, cargar_borradores_previo,
+                           eliminar_borradores_nc, hay_borrador_activo)
 
 st.set_page_config(
     page_title="Sistema de Condonaciones",
@@ -86,6 +88,9 @@ def init():
         "nc_reset":          False,
         "nc_val":            "",
         "fecha_val":         None,
+        "previo_manual_activo": False,
+        "contadores_previo": {},
+        "paso_previo":       "inicio",
     }
     for k, v in defs.items():
         if k not in st.session_state:
@@ -615,8 +620,203 @@ with nav[0]:
             st.session_state["nc_cliente"]      = nc_input.strip()
             st.session_state["fecha_revision"]  = hoy_mx()
             st.session_state["alertas"]         = alertas
-            st.session_state["paso"]            = "confirmacion"
+
+            # ── Detectar contenedores con 2+ servicios ───────────
+            from app.config import COL_BI as _CB
+            conts_multi = []
+            for _, row in df_bv.iterrows():
+                try:
+                    ns = int(row.get(_CB.get("no_servicios","No. Servicios"), 0) or 0)
+                    if ns >= 2:
+                        conts_multi.append(row[_CB["contenedor"]])
+                except Exception:
+                    pass
+
+            if conts_multi:
+                st.session_state["conts_multi_previo"] = conts_multi
+                st.session_state["paso"] = "previo_alerta"
+            else:
+                st.session_state["conts_multi_previo"] = []
+                st.session_state["paso"] = "confirmacion"
             st.rerun()
+
+        # ════════════════════════════════════════════════════
+        #   FLUJO: ALERTA PREVIOS MÚLTIPLES
+        # ════════════════════════════════════════════════════
+        if st.session_state["paso"] == "previo_alerta":
+            from app.config import COL_BI as _CB2
+            conts = st.session_state.get("conts_multi_previo", [])
+            nc    = st.session_state.get("nc_cliente", "")
+            usr   = st.session_state["usuario"]
+            tiene_borrador = hay_borrador_activo(usr["id"], nc)
+
+            st.markdown("### Servicios múltiples de previo detectados")
+            st.warning(
+                "Se detectaron contenedor(es) con 2 o más servicios programados. "
+                "Considerar que el BI únicamente maneja una sola fecha de previo desde "
+                "la primera programación hasta el posicionamiento, aunque sea en un "
+                "servicio distinto al primero. "
+                "¿Deseas ajustar manualmente las fechas de previo de manera individual?"
+            )
+            if tiene_borrador:
+                st.info("Se encontró un borrador guardado para esta NC. "
+                        "Puedes continuar donde lo dejaste.")
+            pa1, pa2 = st.columns(2)
+            with pa1:
+                if st.button("✅ Sí, ajustar manualmente", type="primary",
+                             use_container_width=True, key="previo_si"):
+                    st.session_state["paso"] = "previo_manual"
+                    if "contadores_previo" not in st.session_state:
+                        st.session_state["contadores_previo"] = {}
+                    for c in conts:
+                        if c not in st.session_state["contadores_previo"]:
+                            st.session_state["contadores_previo"][c] = 1
+                    st.rerun()
+            with pa2:
+                if st.button("No, continuar con cálculo automático",
+                             use_container_width=True, key="previo_no"):
+                    eliminar_borradores_nc(usr["id"], nc)
+                    st.session_state["paso"] = "confirmacion"
+                    st.rerun()
+
+        # ════════════════════════════════════════════════════
+        #   FLUJO: CAPTURA MANUAL DE PREVIOS
+        # ════════════════════════════════════════════════════
+        if st.session_state["paso"] == "previo_manual":
+            from app.calendario import calcular_desfase_regla3 as _cdr3
+            from app.validaciones import to_date as _td, calcular_montos as _cm
+            from app.config import COL_BI as _CB3
+            from datetime import datetime as _dt2
+
+            nc      = st.session_state.get("nc_cliente", "")
+            usr     = st.session_state["usuario"]
+            perfil  = st.session_state["perfiles"][st.session_state["perfil_idx"]]
+            conts   = st.session_state.get("conts_multi_previo", [])
+            df_bv   = st.session_state["df_bi_v"]
+            dias_esp = st.session_state["dias_especiales"]
+
+            if "contadores_previo" not in st.session_state:
+                st.session_state["contadores_previo"] = {c: 1 for c in conts}
+
+            borradores = cargar_borradores_previo(usr["id"], nc)
+            bor_dict   = {(b["contenedor"], b["previo_num"]): b for b in borradores}
+
+            # Actualizar contadores según borradores
+            for c in conts:
+                max_num = max(
+                    [b["previo_num"] for b in borradores if b["contenedor"] == c],
+                    default=0
+                )
+                cur = st.session_state["contadores_previo"].get(c, 1)
+                if max_num > cur:
+                    st.session_state["contadores_previo"][c] = max_num
+
+            st.markdown("### Captura manual de fechas de previo")
+            st.caption("Los cambios se guardan automáticamente. "
+                       "Puedes cerrar la app y continuar después.")
+
+            completados = sum(
+                1 for c in conts
+                if any(b["contenedor"] == c and b.get("fecha_programacion")
+                       and b.get("fecha_posicionamiento") for b in borradores)
+            )
+            total = len(conts)
+            pct   = completados / total if total else 0
+            st.progress(pct,
+                text=f"{completados} de {total} contenedores completados — {int(pct*100)}%")
+            st.markdown("---")
+
+            for cont in conts:
+                bors_cont  = [b for b in borradores if b["contenedor"] == cont]
+                completado = (len(bors_cont) > 0 and
+                              all(b.get("fecha_programacion") and
+                                  b.get("fecha_posicionamiento") for b in bors_cont))
+                n_previos  = st.session_state["contadores_previo"].get(cont, 1)
+
+                ns_val = 0
+                for _, row in df_bv.iterrows():
+                    if row[_CB3["contenedor"]] == cont:
+                        try: ns_val = int(row.get("No. Servicios", 0) or 0)
+                        except: pass
+                        break
+
+                lbl = (f"✅ {cont}  ({ns_val} servicios) — Completado"
+                       if completado else
+                       f"⏳ {cont}  ({ns_val} servicios) — Pendiente")
+
+                with st.expander(lbl, expanded=not completado):
+                    for pnum in range(1, n_previos + 1):
+                        bor = bor_dict.get((cont, pnum), {})
+                        st.markdown(f"**Previo {pnum}**")
+                        fc1, fc2 = st.columns(2)
+
+                        def fmt_fecha(v):
+                            if not v: return ""
+                            try:
+                                if hasattr(v, 'strftime'): return v.strftime("%d/%m/%Y")
+                                d = _dt2.strptime(str(v)[:10], "%Y-%m-%d")
+                                return d.strftime("%d/%m/%Y")
+                            except: return str(v) if v else ""
+
+                        with fc1:
+                            prog = st.text_input("Fecha programación (DD/MM/AAAA)",
+                                value=fmt_fecha(bor.get("fecha_programacion")),
+                                key=f"prog_{cont}_{pnum}", placeholder="DD/MM/AAAA")
+                        with fc2:
+                            pos = st.text_input("Fecha posicionamiento (DD/MM/AAAA)",
+                                value=fmt_fecha(bor.get("fecha_posicionamiento")),
+                                key=f"pos_{cont}_{pnum}", placeholder="DD/MM/AAAA")
+
+                        if prog and pos:
+                            try:
+                                fp  = _dt2.strptime(prog, "%d/%m/%Y").strftime("%Y-%m-%d")
+                                fpo = _dt2.strptime(pos,  "%d/%m/%Y").strftime("%Y-%m-%d")
+                                guardar_previo_borrador(usr["id"], nc, cont, pnum, fp, fpo)
+                            except: pass
+
+                        if pnum < n_previos:
+                            st.divider()
+
+                    if n_previos < 50:
+                        if st.button("＋ Agregar otro previo",
+                                     key=f"add_{cont}"):
+                            st.session_state["contadores_previo"][cont] = n_previos + 1
+                            st.rerun()
+
+            st.markdown("---")
+            if st.button("💾 Calcular desfases y continuar",
+                         type="primary", use_container_width=True,
+                         key="calc_previos"):
+                desfases = st.session_state["desfases"]
+                dias_p   = perfil.get("dias_previo", 3)
+                bors_fin = cargar_borradores_previo(usr["id"], nc)
+
+                for cont in conts:
+                    bors = sorted(
+                        [b for b in bors_fin if b["contenedor"] == cont],
+                        key=lambda x: x["previo_num"]
+                    )
+                    total_d = 0
+                    for b in bors:
+                        try:
+                            fp  = _dt2.strptime(b["fecha_programacion"],  "%Y-%m-%d").date()
+                            fpo = _dt2.strptime(b["fecha_posicionamiento"], "%Y-%m-%d").date()
+                            d, _ = _cdr3(fp, fpo, dias_esp, dias_p)
+                            total_d += d
+                        except: pass
+
+                    if cont in desfases:
+                        desfases[cont]["desfase_previo"] = total_d
+                        desfases[cont]["total_desfase"]  = (
+                            total_d +
+                            desfases[cont].get("desfase_ffcc", 0) +
+                            desfases[cont].get("desfase_carretero", 0)
+                        )
+
+                st.session_state["desfases"] = desfases
+                st.session_state["montos"]   = _cm(df_bv, desfases)
+                st.session_state["paso"]     = "confirmacion"
+                st.rerun()
 
         # ════════════════════════════════════════════════════
         #   FLUJO: CONFIRMACIÓN DE DESFASES

@@ -99,18 +99,23 @@ def init():
 init()
 
 # ── Restaurar sesión desde token en URL ─────────────────────────
+# El token en la URL persiste en F5 pero NO entre cierres de navegador
+# ya que la sesión expira por inactividad (3 horas)
 if not st.session_state.get("autenticado"):
     try:
         params = st.query_params
         token  = params.get("sid", "")
         if token:
             from app.database import verificar_sesion as _vs
-            usuario_tok = _vs(token)
+            usuario_tok = _vs(token)  # También actualiza última actividad
             if usuario_tok:
-                st.session_state["autenticado"] = True
-                st.session_state["usuario"]     = usuario_tok
+                st.session_state["autenticado"]   = True
+                st.session_state["usuario"]       = usuario_tok
                 st.session_state["session_token"] = token
                 st.rerun()
+            else:
+                # Token inválido o expirado por inactividad — limpiar URL
+                st.query_params.clear()
     except Exception:
         pass
 
@@ -156,6 +161,17 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
 
 usuario     = st.session_state["usuario"]
 es_admin    = usuario["rol"] == "admin"
+
+# ── Verificar inactividad en cada render ────────────────────────
+if st.session_state.get("session_token"):
+    from app.database import verificar_sesion as _vs2
+    _check = _vs2(st.session_state["session_token"])
+    if not _check:
+        # Sesión expirada por inactividad
+        st.query_params.clear()
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        st.rerun()
 
 # ── Cargar perfiles desde Supabase si no están cargados ────────
 if not st.session_state.get("perfiles_cargados", False):

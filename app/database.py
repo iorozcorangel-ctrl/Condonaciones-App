@@ -455,3 +455,67 @@ def eliminar_sesion(token: str):
         db.table("sesiones").delete().eq("token", token).execute()
     except Exception:
         pass
+
+
+# ════════════════════════════════════════════════════════════════
+#   BORRADORES DE PREVIO MANUAL
+# ════════════════════════════════════════════════════════════════
+
+def guardar_previo_borrador(usuario_id: str, numero_nc: str, contenedor: str,
+                             previo_num: int, fecha_prog: str, fecha_pos: str):
+    """Guarda o actualiza un previo individual en borrador."""
+    try:
+        db = get_client()
+        from datetime import datetime
+        datos = {
+            "usuario_id":           usuario_id,
+            "numero_nc":            numero_nc,
+            "contenedor":           contenedor,
+            "previo_num":           previo_num,
+            "fecha_programacion":   fecha_prog or None,
+            "fecha_posicionamiento": fecha_pos or None,
+            "fecha_actualizacion":  datetime.utcnow().isoformat(),
+        }
+        db.table("borradores_previo").upsert(
+            datos,
+            on_conflict="usuario_id,numero_nc,contenedor,previo_num"
+        ).execute()
+        return True
+    except Exception:
+        return False
+
+
+def cargar_borradores_previo(usuario_id: str, numero_nc: str):
+    """Carga todos los borradores de previo para una NC."""
+    try:
+        db = get_client()
+        res = db.table("borradores_previo").select("*").eq(
+            "usuario_id", usuario_id
+        ).eq("numero_nc", numero_nc).order("contenedor").order("previo_num").execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def eliminar_borradores_nc(usuario_id: str, numero_nc: str):
+    """Elimina todos los borradores de una NC al generar el reporte."""
+    try:
+        db = get_client()
+        db.table("borradores_previo").delete().eq(
+            "usuario_id", usuario_id
+        ).eq("numero_nc", numero_nc).execute()
+        return True
+    except Exception:
+        return False
+
+
+def hay_borrador_activo(usuario_id: str, numero_nc: str):
+    """Verifica si hay un borrador activo para esta NC."""
+    try:
+        db = get_client()
+        res = db.table("borradores_previo").select("id").eq(
+            "usuario_id", usuario_id
+        ).eq("numero_nc", numero_nc).limit(1).execute()
+        return len(res.data) > 0
+    except Exception:
+        return False

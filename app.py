@@ -745,34 +745,75 @@ with nav[0]:
                        f"⏳ {cont}  ({ns_val} servicios) — Pendiente")
 
                 with st.expander(lbl, expanded=not completado):
+                    def parse_fecha_bor(v):
+                        """Convierte valor de BD a date de Python."""
+                        if not v:
+                            return None
+                        try:
+                            if hasattr(v, 'date'):
+                                return v.date() if callable(v.date) else v
+                            if isinstance(v, str):
+                                return _dt2.strptime(v[:10], "%Y-%m-%d").date()
+                        except:
+                            pass
+                        return None
+
                     for pnum in range(1, n_previos + 1):
                         bor = bor_dict.get((cont, pnum), {})
-                        st.markdown(f"**Previo {pnum}**")
+
+                        # Encabezado del previo con botón eliminar (solo si no es el 1)
+                        ph1, ph2 = st.columns([4, 1])
+                        with ph1:
+                            st.markdown(f"**Previo {pnum}**")
+                        with ph2:
+                            if pnum > 1:
+                                if st.button("🗑️ Eliminar",
+                                             key=f"del_{cont}_{pnum}",
+                                             use_container_width=True):
+                                    # Eliminar de BD
+                                    try:
+                                        from app.database import get_client as _gc2
+                                        _db = _gc2()
+                                        _db.table("borradores_previo").delete(
+                                        ).eq("usuario_id", usr["id"]
+                                        ).eq("numero_nc", nc
+                                        ).eq("contenedor", cont
+                                        ).eq("previo_num", pnum).execute()
+                                    except:
+                                        pass
+                                    # Reducir contador
+                                    cur_n = st.session_state["contadores_previo"].get(cont, 1)
+                                    if cur_n > 1:
+                                        st.session_state["contadores_previo"][cont] = cur_n - 1
+                                    st.rerun()
+
+                        # Selectores de fecha (calendarios)
                         fc1, fc2 = st.columns(2)
-
-                        def fmt_fecha(v):
-                            if not v: return ""
-                            try:
-                                if hasattr(v, 'strftime'): return v.strftime("%d/%m/%Y")
-                                d = _dt2.strptime(str(v)[:10], "%Y-%m-%d")
-                                return d.strftime("%d/%m/%Y")
-                            except: return str(v) if v else ""
-
                         with fc1:
-                            prog = st.text_input("Fecha programación (DD/MM/AAAA)",
-                                value=fmt_fecha(bor.get("fecha_programacion")),
-                                key=f"prog_{cont}_{pnum}", placeholder="DD/MM/AAAA")
+                            prog_date = parse_fecha_bor(bor.get("fecha_programacion"))
+                            prog = st.date_input(
+                                "Fecha programación",
+                                value=prog_date,
+                                format="DD/MM/YYYY",
+                                key=f"prog_{cont}_{pnum}"
+                            )
                         with fc2:
-                            pos = st.text_input("Fecha posicionamiento (DD/MM/AAAA)",
-                                value=fmt_fecha(bor.get("fecha_posicionamiento")),
-                                key=f"pos_{cont}_{pnum}", placeholder="DD/MM/AAAA")
+                            pos_date = parse_fecha_bor(bor.get("fecha_posicionamiento"))
+                            pos = st.date_input(
+                                "Fecha posicionamiento",
+                                value=pos_date,
+                                format="DD/MM/YYYY",
+                                key=f"pos_{cont}_{pnum}"
+                            )
 
+                        # Auto-guardar cuando ambas fechas tienen valor
                         if prog and pos:
                             try:
-                                fp  = _dt2.strptime(prog, "%d/%m/%Y").strftime("%Y-%m-%d")
-                                fpo = _dt2.strptime(pos,  "%d/%m/%Y").strftime("%Y-%m-%d")
+                                fp  = prog.strftime("%Y-%m-%d") if hasattr(prog, 'strftime') else str(prog)
+                                fpo = pos.strftime("%Y-%m-%d")  if hasattr(pos,  'strftime') else str(pos)
                                 guardar_previo_borrador(usr["id"], nc, cont, pnum, fp, fpo)
-                            except: pass
+                            except:
+                                pass
 
                         if pnum < n_previos:
                             st.divider()

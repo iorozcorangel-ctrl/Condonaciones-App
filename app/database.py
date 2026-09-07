@@ -398,21 +398,43 @@ def obtener_ultimo_perfil_db(usuario_id: str):
 #   GESTIÓN DE SESIONES PERSISTENTES
 # ════════════════════════════════════════════════════════════════
 
+HORAS_INACTIVIDAD = 3   # Cerrar sesión tras X horas sin actividad
+MAX_SESIONES      = 3   # Máximo de sesiones simultáneas por usuario
+
+
 def crear_sesion(usuario_id: str, username: str) -> str:
-    """Crea una sesión en BD y retorna el token."""
+    """Crea una sesión en BD respetando el límite de sesiones activas."""
     import secrets
     from datetime import datetime, timedelta
     try:
         db    = get_client()
         token = secrets.token_hex(32)
-        expira = datetime.utcnow() + timedelta(days=7)
-        # Limpiar sesiones anteriores del usuario
-        db.table("sesiones").delete().eq("usuario_id", usuario_id).execute()
+        ahora = datetime.utcnow()
+        expira = ahora + timedelta(hours=HORAS_INACTIVIDAD)
+
+        # Limpiar sesiones expiradas por inactividad del usuario
+        limite = (ahora - timedelta(hours=HORAS_INACTIVIDAD)).isoformat()
+        db.table("sesiones").delete().eq(
+            "usuario_id", usuario_id
+        ).lt("ultima_actividad", limite).execute()
+
+        # Verificar cuántas sesiones activas quedan
+        res = db.table("sesiones").select("id, ultima_actividad").eq(
+            "usuario_id", usuario_id
+        ).order("ultima_actividad", desc=False).execute()
+        sesiones_activas = res.data or []
+
+        # Si ya hay MAX_SESIONES, eliminar la más antigua
+        while len(sesiones_activas) >= MAX_SESIONES:
+            mas_antigua = sesiones_activas.pop(0)
+            db.table("sesiones").delete().eq("id", mas_antigua["id"]).execute()
+
         db.table("sesiones").insert({
-            "usuario_id": usuario_id,
-            "token":      token,
-            "username":   username,
-            "expira_en":  expira.isoformat(),
+            "usuario_id":       usuario_id,
+            "token":            token,
+            "username":         username,
+            "expira_en":        expira.isoformat(),
+            "ultima_actividad": ahora.isoformat(),
         }).execute()
         return token
     except Exception:
@@ -420,23 +442,35 @@ def crear_sesion(usuario_id: str, username: str) -> str:
 
 
 def verificar_sesion(token: str):
-    """Verifica un token de sesión. Retorna el usuario o None."""
-    from datetime import datetime
+    """Verifica un token. Comprueba inactividad y actualiza última actividad."""
+    from datetime import datetime, timedelta
     if not token:
         return None
     try:
         db  = get_client()
         res = db.table("sesiones").select(
-            "usuario_id, username, expira_en"
+            "id, usuario_id, username, ultima_actividad"
         ).eq("token", token).execute()
         if not res.data:
             return None
         sesion = res.data[0]
-        # Verificar expiración
-        expira = datetime.fromisoformat(sesion["expira_en"].replace("Z", ""))
-        if datetime.utcnow() > expira:
+
+        # Verificar inactividad
+        ahora = datetime.utcnow()
+        ultima = datetime.fromisoformat(
+            (sesion.get("ultima_actividad") or "").replace("Z", "")
+        )
+        if (ahora - ultima).total_seconds() > HORAS_INACTIVIDAD * 3600:
             db.table("sesiones").delete().eq("token", token).execute()
             return None
+
+        # Actualizar última actividad
+        nueva_expira = ahora + timedelta(hours=HORAS_INACTIVIDAD)
+        db.table("sesiones").update({
+            "ultima_actividad": ahora.isoformat(),
+            "expira_en":        nueva_expira.isoformat(),
+        }).eq("token", token).execute()
+
         # Obtener usuario completo
         res2 = db.table("usuarios").select("*").eq(
             "id", sesion["usuario_id"]

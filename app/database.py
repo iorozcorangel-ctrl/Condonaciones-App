@@ -553,3 +553,357 @@ def hay_borrador_activo(usuario_id: str, numero_nc: str):
         return len(res.data) > 0
     except Exception:
         return False
+
+
+# ════════════════════════════════════════════════════════════════
+#   MÓDULO: ASIGNACIONES Y SEGUIMIENTO DE NC
+# ════════════════════════════════════════════════════════════════
+
+import re as _re
+
+
+def extraer_contenedores(texto: str):
+    """
+    Extrae automáticamente contenedores válidos de un texto pegado,
+    sin importar el separador (comas, sin separar, combinado).
+    Formato: 3 letras + U + 7 dígitos = 11 caracteres.
+    Máximo 300 contenedores.
+    """
+    if not texto:
+        return []
+    limpio = _re.sub(r'[^A-Za-z0-9]', '', texto.upper())
+    encontrados = _re.findall(r'[A-Z]{3}U\d{7}', limpio)
+    # Deduplicar conservando el orden
+    vistos = []
+    for c in encontrados:
+        if c not in vistos:
+            vistos.append(c)
+    return vistos[:300]
+
+
+# ── Motivos y Estatus (listas editables) ────────────────────────
+
+def obtener_nc_motivos(solo_activos=True):
+    try:
+        db = get_client()
+        q = db.table("nc_motivos").select("*").order("orden")
+        if solo_activos:
+            q = q.eq("activo", True)
+        res = q.execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def crear_nc_motivo(texto: str):
+    try:
+        db = get_client()
+        max_orden = db.table("nc_motivos").select("orden").order("orden", desc=True).limit(1).execute()
+        siguiente = (max_orden.data[0]["orden"] + 1) if max_orden.data else 1
+        db.table("nc_motivos").insert({"texto": texto, "orden": siguiente}).execute()
+        return True
+    except Exception:
+        return False
+
+
+def editar_nc_motivo(motivo_id: str, texto: str):
+    try:
+        db = get_client()
+        db.table("nc_motivos").update({"texto": texto}).eq("id", motivo_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def eliminar_nc_motivo(motivo_id: str):
+    try:
+        db = get_client()
+        db.table("nc_motivos").update({"activo": False}).eq("id", motivo_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def obtener_nc_estatus(solo_activos=True):
+    try:
+        db = get_client()
+        q = db.table("nc_estatus").select("*").order("orden")
+        if solo_activos:
+            q = q.eq("activo", True)
+        res = q.execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def crear_nc_estatus(texto: str, es_concluido=False):
+    try:
+        db = get_client()
+        max_orden = db.table("nc_estatus").select("orden").order("orden", desc=True).limit(1).execute()
+        siguiente = (max_orden.data[0]["orden"] + 1) if max_orden.data else 1
+        db.table("nc_estatus").insert({
+            "texto": texto, "orden": siguiente, "es_concluido": es_concluido
+        }).execute()
+        return True
+    except Exception:
+        return False
+
+
+def editar_nc_estatus(estatus_id: str, texto: str, es_concluido=False):
+    try:
+        db = get_client()
+        db.table("nc_estatus").update({
+            "texto": texto, "es_concluido": es_concluido
+        }).eq("id", estatus_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def eliminar_nc_estatus(estatus_id: str):
+    try:
+        db = get_client()
+        db.table("nc_estatus").update({"activo": False}).eq("id", estatus_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+# ── NC Asignaciones — CRUD principal ────────────────────────────
+
+def crear_nc_asignacion(nc_externo: str, responsable_id: str, responsable_nombre: str,
+                         fecha_solicitud: str, creado_por: str, vinculada_a: str = None):
+    """Crea una nueva NC asignada. Retorna (True, id) o (False, error)."""
+    try:
+        db = get_client()
+        res = db.table("nc_asignaciones").insert({
+            "nc_externo":          nc_externo,
+            "responsable_id":      responsable_id,
+            "responsable_nombre":  responsable_nombre,
+            "fecha_solicitud":     fecha_solicitud,
+            "creado_por":          creado_por,
+            "vinculada_a":         vinculada_a,
+            "estado_visual":       "nuevo",
+            "estatus":             "PENDIENTE DE REVISAR",
+        }).execute()
+        if res.data:
+            nc_id = res.data[0]["id"]
+            crear_nc_notificacion(
+                responsable_id, nc_id,
+                f"Se te asignó una nueva NC: {nc_externo}"
+            )
+            return True, nc_id
+        return False, "No se pudo crear"
+    except Exception as e:
+        return False, str(e)
+
+
+def obtener_nc_asignaciones(responsable_id: str = None, solo_activas: bool = None,
+                             solo_concluidas: bool = None):
+    """Obtiene NCs asignadas con filtros opcionales."""
+    try:
+        db = get_client()
+        q = db.table("nc_asignaciones").select("*")
+        if responsable_id:
+            q = q.eq("responsable_id", responsable_id)
+        if solo_concluidas is True:
+            q = q.eq("concluida", True)
+        elif solo_concluidas is False:
+            q = q.eq("concluida", False)
+        q = q.order("fecha_creacion", desc=True)
+        res = q.execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def obtener_nc_por_id(nc_id: str):
+    try:
+        db = get_client()
+        res = db.table("nc_asignaciones").select("*").eq("id", nc_id).execute()
+        return res.data[0] if res.data else None
+    except Exception:
+        return None
+
+
+def actualizar_nc_asignacion(nc_id: str, datos: dict):
+    """Actualiza campos de una NC asignada."""
+    try:
+        db = get_client()
+        from datetime import datetime
+        datos["fecha_actualizacion"] = datetime.utcnow().isoformat()
+        db.table("nc_asignaciones").update(datos).eq("id", nc_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def reasignar_nc(nc_id: str, nuevo_responsable_id: str, nuevo_responsable_nombre: str):
+    """Reasigna el responsable de una NC y notifica."""
+    try:
+        ok = actualizar_nc_asignacion(nc_id, {
+            "responsable_id":     nuevo_responsable_id,
+            "responsable_nombre": nuevo_responsable_nombre,
+            "estado_visual":      "reasignado",
+        })
+        if ok:
+            nc = obtener_nc_por_id(nc_id)
+            crear_nc_notificacion(
+                nuevo_responsable_id, nc_id,
+                f"Se te reasignó la NC: {nc['nc_externo'] if nc else ''}"
+            )
+        return ok
+    except Exception:
+        return False
+
+
+def inhabilitar_nc(nc_id: str, motivo: str):
+    try:
+        return actualizar_nc_asignacion(nc_id, {
+            "inhabilitada": True,
+            "motivo_inhabilitacion": motivo,
+        })
+    except Exception:
+        return False
+
+
+def marcar_seguimiento_nc(nc_id: str):
+    """Cambia el estado visual a 'seguimiento' (verde) cuando el usuario abre/edita."""
+    try:
+        nc = obtener_nc_por_id(nc_id)
+        if nc and nc.get("estado_visual") != "seguimiento":
+            actualizar_nc_asignacion(nc_id, {"estado_visual": "seguimiento"})
+    except Exception:
+        pass
+
+
+def concluir_nc(nc_id: str):
+    try:
+        return actualizar_nc_asignacion(nc_id, {"concluida": True})
+    except Exception:
+        return False
+
+
+def reabrir_nc(nc_id: str):
+    try:
+        return actualizar_nc_asignacion(nc_id, {"concluida": False})
+    except Exception:
+        return False
+
+
+def buscar_nc_asignaciones(termino: str):
+    """Busca por NC externo, interno, contenedor o factura."""
+    try:
+        db = get_client()
+        t = termino.strip().upper()
+        res = db.table("nc_asignaciones").select("*").or_(
+            f"nc_externo.ilike.%{t}%,"
+            f"nc_interno.ilike.%{t}%,"
+            f"contenedores.ilike.%{t}%,"
+            f"numero_factura.ilike.%{t}%"
+        ).execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def actualizar_herencia_analisis(nc_asignacion_id: str, cliente: str, numero_factura: str):
+    """Guarda Cliente y Factura provenientes del análisis en la NC asignada."""
+    try:
+        factura_limpia = _re.sub(r'[^0-9]', '', str(numero_factura)) if numero_factura else ""
+        datos = {}
+        if cliente:
+            datos["cliente"] = cliente
+        if factura_limpia:
+            datos["numero_factura"] = factura_limpia
+        if datos:
+            actualizar_nc_asignacion(nc_asignacion_id, datos)
+        return True
+    except Exception:
+        return False
+
+
+# ── Notificaciones ───────────────────────────────────────────────
+
+def crear_nc_notificacion(usuario_id: str, nc_id: str, mensaje: str):
+    try:
+        db = get_client()
+        db.table("nc_notificaciones").insert({
+            "usuario_id": usuario_id,
+            "nc_id": nc_id,
+            "mensaje": mensaje,
+        }).execute()
+        return True
+    except Exception:
+        return False
+
+
+def obtener_notificaciones_pendientes(usuario_id: str):
+    try:
+        db = get_client()
+        res = db.table("nc_notificaciones").select("*").eq(
+            "usuario_id", usuario_id
+        ).eq("vista", False).order("fecha_creacion", desc=True).execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def marcar_notificaciones_vistas(usuario_id: str):
+    try:
+        db = get_client()
+        db.table("nc_notificaciones").update({"vista": True}).eq(
+            "usuario_id", usuario_id
+        ).eq("vista", False).execute()
+        return True
+    except Exception:
+        return False
+
+
+# ── Detección de contenedores duplicados entre NCs ──────────────
+
+def verificar_contenedores_en_nc(contenedores: list, excluir_nc_id: str = None):
+    """
+    Busca si alguno de los contenedores ya existe en otra NC asignada.
+    Retorna lista de coincidencias: [{nc_id, nc_externo, contenedor,
+    responsable_nombre, concluida, inhabilitada}]
+    """
+    try:
+        db = get_client()
+        res = db.table("nc_asignaciones").select(
+            "id, nc_externo, contenedores, responsable_nombre, concluida, inhabilitada"
+        ).execute()
+        todas = res.data or []
+        coincidencias = []
+        for nc in todas:
+            if excluir_nc_id and nc["id"] == excluir_nc_id:
+                continue
+            if nc.get("inhabilitada"):
+                continue
+            conts_nc = (nc.get("contenedores") or "").split(",")
+            conts_nc = [c.strip() for c in conts_nc if c.strip()]
+            for c in contenedores:
+                if c in conts_nc:
+                    coincidencias.append({
+                        "nc_id":              nc["id"],
+                        "nc_externo":         nc["nc_externo"],
+                        "contenedor":         c,
+                        "responsable_nombre": nc.get("responsable_nombre", ""),
+                        "concluida":          nc.get("concluida", False),
+                    })
+        return coincidencias
+    except Exception:
+        return []
+
+
+def registrar_duplicado_revisado(nc_id: str, contenedor: str, revisado_por: str):
+    try:
+        db = get_client()
+        db.table("nc_duplicados_revisados").insert({
+            "nc_id": nc_id,
+            "contenedor": contenedor,
+            "revisado_por": revisado_por,
+        }).execute()
+        return True
+    except Exception:
+        return False

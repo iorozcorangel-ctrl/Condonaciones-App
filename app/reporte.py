@@ -272,7 +272,18 @@ def generar_reporte(df_tab, df_bi, desfases, montos, fecha_solicitud_global,
         _dat(ws, data_row, c, bi_val("agente_aduanal"));                                c += 1
         _dat(ws, data_row, c, bi_val("cliente"));                                       c += 1
         _dat(ws, data_row, c, monto_total_cont, money=True);                            c += 1
-        _dat(ws, data_row, c, tab_val("clabe"));                                        c += 1
+        # CLABE: forzar como texto para evitar notación científica
+        clabe_val = tab_val("clabe")
+        if clabe_val is not None:
+            clabe_str = str(int(float(clabe_val))) if str(clabe_val).replace('.','').replace('E+','').replace('e+','').isdigit() or 'E' in str(clabe_val).upper() else str(clabe_val).strip()
+        else:
+            clabe_str = ""
+        clabe_cell = ws.cell(row=data_row, column=c, value=clabe_str)
+        clabe_cell.font      = _DAT_FONT
+        clabe_cell.alignment = _DAT_ALIGN
+        clabe_cell.border    = _BORDER
+        clabe_cell.number_format = "@"  # Formato texto
+        c += 1
         _dat(ws, data_row, c, "");                                                      c += 1  # Manual
         _dat(ws, data_row, c, nc_cliente);                                              c += 1
 

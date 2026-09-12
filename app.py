@@ -19,6 +19,31 @@ def hoy_mx():
     """Retorna la fecha actual en zona horaria de México."""
     return datetime.now(ZONA_MX).date()
 
+
+# ── Wrappers con caché corto para evitar golpear Supabase en cada
+#    rerun de Streamlit (todas las pestañas se ejecutan siempre,
+#    aunque no estén visibles, así que cachear reduce mucho la carga) ──
+@st.cache_data(ttl=8, show_spinner=False)
+def _cached_nc_asignaciones():
+    return obtener_nc_asignaciones()
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _cached_usuarios():
+    return obtener_usuarios()
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_nc_motivos():
+    return obtener_nc_motivos()
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_nc_estatus():
+    return obtener_nc_estatus()
+
+
+def invalidar_cache_nc():
+    """Llamar después de crear/editar/eliminar una NC para refrescar la vista al instante."""
+    _cached_nc_asignaciones.clear()
+
 from app.config import COL_BI, COL_TAB
 # Perfiles ahora vienen de Supabase via database.py
 from app.calendario import get_festivos_oficiales
@@ -175,10 +200,14 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
 usuario     = st.session_state["usuario"]
 es_admin    = usuario["rol"] == "admin"
 
-# ── Verificar inactividad en cada render ────────────────────────
-if st.session_state.get("session_token"):
+# ── Verificar inactividad — solo cada 2 minutos, no en cada render ──
+# (evita un round-trip a Supabase por cada clic, que hacía sentir lenta la app)
+import time as _time
+_ultima_verif = st.session_state.get("_ultima_verif_sesion", 0)
+if st.session_state.get("session_token") and (_time.time() - _ultima_verif > 120):
     from app.database import verificar_sesion as _vs2
     _check = _vs2(st.session_state["session_token"])
+    st.session_state["_ultima_verif_sesion"] = _time.time()
     if not _check:
         # Sesión expirada por inactividad
         st.query_params.clear()
@@ -385,7 +414,7 @@ with nav[0]:
         ikey = st.session_state["uploader_key"]
 
         # ── Campo único de N° NC — solo se puede elegir de la lista ───
-        nc_asignadas_disp = obtener_nc_asignaciones()
+        nc_asignadas_disp = _cached_nc_asignaciones()
         # Deduplicar nombres conservando orden
         nombres_nc_asig = []
         for nc in nc_asignadas_disp:
@@ -866,12 +895,18 @@ with nav[0]:
                                 key=f"pos_{cont}_{pnum}"
                             )
 
-                        # Auto-guardar cuando ambas fechas tienen valor
+                        # Auto-guardar SOLO si el valor cambió (evita golpear la BD
+                        # en cada rerun de Streamlit y que la app se sienta lenta)
                         if prog and pos:
                             try:
                                 fp  = prog.strftime("%Y-%m-%d") if hasattr(prog, 'strftime') else str(prog)
                                 fpo = pos.strftime("%Y-%m-%d")  if hasattr(pos,  'strftime') else str(pos)
-                                guardar_previo_borrador(usr["id"], nc, cont, pnum, fp, fpo)
+                                previo_actual = (
+                                    str(bor.get("fecha_programacion") or "")[:10],
+                                    str(bor.get("fecha_posicionamiento") or "")[:10],
+                                )
+                                if (fp, fpo) != previo_actual:
+                                    guardar_previo_borrador(usr["id"], nc, cont, pnum, fp, fpo)
                             except:
                                 pass
 
@@ -1033,7 +1068,7 @@ with nav[0]:
                     break
 
             nc_existente = next(
-                (n for n in obtener_nc_asignaciones() if n["nc_externo"] == nc), None
+                (n for n in _cached_nc_asignaciones() if n["nc_externo"] == nc), None
             )
             if nc_existente:
                 actualizar_herencia_analisis(nc_existente["id"], cliente_val, factura_val)
@@ -1595,7 +1630,7 @@ with nav[IDX_GESTION]:
                 with st.form("form_nueva_nc"):
                     nc_ext = st.text_input("Número de nota de crédito externa")
 
-                    usuarios_lista = obtener_usuarios()
+                    usuarios_lista = _cached_usuarios()
                     nombres_usr = [u["nombre_completo"] for u in usuarios_lista if u["activo"]]
                     resp_sel = st.selectbox("Encargado responsable de la NC", nombres_usr)
 
@@ -1605,7 +1640,7 @@ with nav[IDX_GESTION]:
                     vincular = st.checkbox("🔗 Vincular NC anterior")
                     nc_vinc_id = None
                     if vincular:
-                        todas_nc = obtener_nc_asignaciones()
+                        todas_nc = _cached_nc_asignaciones()
                         opciones_vinc = {f"{nc['nc_externo']} ({nc['id'][:8]})": nc["id"]
                                          for nc in todas_nc}
                         busq_vinc = st.text_input("Buscar NC para vincular")
@@ -1629,13 +1664,14 @@ with nav[IDX_GESTION]:
                             )
                             if ok:
                                 st.success(f"NC {nc_ext} creada y asignada a {resp_sel}")
+                                invalidar_cache_nc()
                                 st.rerun()
                             else:
                                 st.error(f"Error: {res}")
 
             st.markdown("### Todas las NCs asignadas")
             busq_asig = st.text_input("🔍 Buscar por NC, contenedor o factura", key="busq_asignar")
-            todas = buscar_nc_asignaciones(busq_asig) if busq_asig.strip() else obtener_nc_asignaciones()
+            todas = buscar_nc_asignaciones(busq_asig) if busq_asig.strip() else _cached_nc_asignaciones()
 
             COLOR_VISUAL = {
                 "nuevo":        ("🔵", "#E3F2FD"),
@@ -1680,6 +1716,7 @@ with nav[IDX_GESTION]:
                                                   if u["nombre_completo"] == nuevo_resp_sel), None)
                                 reasignar_nc(nc["id"], nuevo_obj["id"], nuevo_obj["nombre_completo"])
                                 st.success("Reasignado correctamente")
+                                invalidar_cache_nc()
                                 st.rerun()
                     with ra2:
                         if not nc.get("inhabilitada"):
@@ -1689,6 +1726,7 @@ with nav[IDX_GESTION]:
                                     if motivo_inhab.strip():
                                         inhabilitar_nc(nc["id"], motivo_inhab.strip())
                                         st.success("NC inhabilitada")
+                                        invalidar_cache_nc()
                                         st.rerun()
                                     else:
                                         st.warning("Escribe un motivo")
@@ -1698,14 +1736,14 @@ with nav[IDX_GESTION]:
         st.markdown("<div class='sec-hdr'>📌 NC Asignadas</div>", unsafe_allow_html=True)
 
         if es_admin:
-            lista_nc = [n for n in obtener_nc_asignaciones() if not n.get("concluida")]
+            lista_nc = [n for n in _cached_nc_asignaciones() if not n.get("concluida")]
         else:
             lista_nc = [n for n in obtener_nc_asignaciones(responsable_id=usuario["id"])
                         if not n.get("concluida")]
 
-        motivos_disp = [m["texto"] for m in obtener_nc_motivos()]
-        estatus_disp = [e["texto"] for e in obtener_nc_estatus()]
-        estatus_concluido_set = {e["texto"] for e in obtener_nc_estatus() if e.get("es_concluido")}
+        motivos_disp = [m["texto"] for m in _cached_nc_motivos()]
+        estatus_disp = [e["texto"] for e in _cached_nc_estatus()]
+        estatus_concluido_set = {e["texto"] for e in _cached_nc_estatus() if e.get("es_concluido")}
 
         if not lista_nc:
             st.info("No tienes NCs asignadas pendientes.")
@@ -1793,6 +1831,7 @@ with nav[IDX_GESTION]:
                         if estatus_sel in estatus_concluido_set and nc_emitida:
                             datos_guardar["concluida"] = True
                         actualizar_nc_asignacion(nc["id"], datos_guardar)
+                        invalidar_cache_nc()
                         st.success("Información guardada")
                         st.rerun()
 
@@ -1821,6 +1860,7 @@ with nav[IDX_GESTION]:
                                     f"Solicitud duplicada con la {dup['nc_externo']}")
                                 del st.session_state[f"dups_pendientes_{nc['id']}"]
                                 st.success("NC marcada como duplicada e inhabilitada")
+                                invalidar_cache_nc()
                                 st.rerun()
                         with dd2:
                             if st.button("No, continuar normalmente",
@@ -1842,13 +1882,14 @@ with nav[IDX_GESTION]:
                                 actualizar_nc_asignacion(nc["id"], datos_guardar)
                                 del st.session_state[f"dups_pendientes_{nc['id']}"]
                                 st.success("🔍 Revisado — información guardada")
+                                invalidar_cache_nc()
                                 st.rerun()
     _si += 1
 
     with sub_nav[_si]:
         st.markdown("<div class='sec-hdr'>✅ NC Concluidas</div>", unsafe_allow_html=True)
 
-        concluidas = [n for n in obtener_nc_asignaciones() if n.get("concluida")]
+        concluidas = [n for n in _cached_nc_asignaciones() if n.get("concluida")]
         if not es_admin:
             concluidas = [n for n in concluidas if n["responsable_id"] == usuario["id"]]
 
@@ -1876,6 +1917,7 @@ with nav[IDX_GESTION]:
                                 key=f"reabrir_{nc['id']}"):
                         reabrir_nc(nc["id"])
                         st.success("NC reabierta")
+                        invalidar_cache_nc()
                         st.rerun()
     _si += 1
 
@@ -1885,7 +1927,7 @@ with nav[IDX_GESTION]:
 
         busq_creadas = st.text_input("🔍 Buscar por NC, contenedor o factura", key="busq_creadas")
         todas_creadas = (buscar_nc_asignaciones(busq_creadas)
-                         if busq_creadas.strip() else obtener_nc_asignaciones())
+                         if busq_creadas.strip() else _cached_nc_asignaciones())
 
         if todas_creadas:
             tabla_creadas = []
@@ -1937,7 +1979,7 @@ if es_admin and IDX_USUARIOS is not None:
         # ── Lista de usuarios ─────────────────────────────────
         st.markdown("### Usuarios registrados")
         with st.spinner("Cargando usuarios..."):
-            usuarios = obtener_usuarios()
+            usuarios = _cached_usuarios()
 
         for u in usuarios:
             es_yo = u["id"] == usuario["id"]
@@ -2006,7 +2048,7 @@ if es_admin and IDX_USUARIOS is not None:
                     st.success("Motivo agregado")
                     st.rerun()
 
-        for m in obtener_nc_motivos():
+        for m in _cached_nc_motivos():
             mc1, mc2, mc3 = st.columns([5, 1, 1])
             with mc1:
                 edit_mot = st.text_input("Motivo", value=m["texto"],
@@ -2033,7 +2075,7 @@ if es_admin and IDX_USUARIOS is not None:
                     st.success("Estatus agregado")
                     st.rerun()
 
-        for e in obtener_nc_estatus():
+        for e in _cached_nc_estatus():
             ec1, ec2, ec3 = st.columns([5, 1, 1])
             with ec1:
                 edit_est = st.text_input("Estatus", value=e["texto"],

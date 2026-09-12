@@ -241,25 +241,14 @@ with col_user:
         st.rerun()
 
 # ── Navegación ──────────────────────────────────────────────────
-tabs_disponibles = ["📊 Análisis", "📋 Historial NC", "📖 Reglas de Aplicación"]
-if es_admin:
-    tabs_disponibles.append("🗂️ Asignar NC")
-tabs_disponibles.append("📌 NC Asignadas")
-tabs_disponibles.append("✅ NC Concluidas")
-tabs_disponibles.append("🗃️ NC Creadas")
+tabs_disponibles = ["📊 Análisis", "📋 Historial NC", "📖 Reglas de Aplicación",
+                    "🗂️ Gestión NC"]
 if es_admin:
     tabs_disponibles.append("👥 Usuarios")
 
 # Índices dinámicos según el rol
-_idx = 3
-if es_admin:
-    IDX_ASIGNAR = _idx; _idx += 1
-else:
-    IDX_ASIGNAR = None
-IDX_NC_ASIGNADAS  = _idx; _idx += 1
-IDX_NC_CONCLUIDAS = _idx; _idx += 1
-IDX_NC_CREADAS    = _idx; _idx += 1
-IDX_USUARIOS      = _idx if es_admin else None
+IDX_GESTION  = 3
+IDX_USUARIOS = 4 if es_admin else None
 
 # ── Popup de notificaciones al iniciar sesión ───────────────────
 if not st.session_state.get("notif_mostrado", False):
@@ -395,21 +384,32 @@ with nav[0]:
         # Reset NC y fecha — usar input_key para forzar re-render
         ikey = st.session_state["uploader_key"]
 
-        # Lista desplegable de NCs asignadas existentes (más escribir manual)
+        # ── Campo único de N° NC con sugerencias de NCs asignadas ─────
         nc_asignadas_disp = obtener_nc_asignaciones()
-        opciones_nc_asig = ["(Escribir manualmente)"] + [
-            nc["nc_externo"] for nc in nc_asignadas_disp
-        ]
-        nc_sel_lista = dc1.selectbox("N° Nota de Crédito (o selecciona una asignada)",
-                                     opciones_nc_asig, disabled=bloqueado,
-                                     key=f"nc_sel_{ikey}")
-        if nc_sel_lista == "(Escribir manualmente)":
-            nc_input = dc1.text_input("Escribir N° NC manualmente",
-                                       placeholder="Ej: NC-2585",
-                                       disabled=bloqueado,
-                                       key=f"nc_input_{ikey}")
-        else:
-            nc_input = nc_sel_lista
+        nombres_nc_asig   = [nc["nc_externo"] for nc in nc_asignadas_disp]
+
+        _nc_key = f"nc_input_{ikey}"
+
+        # Si el usuario eligió una sugerencia, precargar ese valor una vez
+        _sugerencia_key = f"nc_sugerencia_{ikey}"
+        if st.session_state.get(_sugerencia_key):
+            st.session_state[_nc_key] = st.session_state.pop(_sugerencia_key)
+
+        nc_input = dc1.text_input("N° Nota de Crédito",
+                                   placeholder="Ej: NC-2585",
+                                   disabled=bloqueado,
+                                   key=_nc_key)
+
+        if nombres_nc_asig and not bloqueado:
+            with dc1.popover("🔎 Elegir de NCs asignadas existentes"):
+                busq_nc_sug = st.text_input("Buscar", key=f"busq_nc_sug_{ikey}")
+                filtradas_sug = [n for n in nombres_nc_asig
+                                 if busq_nc_sug.upper() in n.upper()] if busq_nc_sug else nombres_nc_asig
+                for opcion in filtradas_sug[:20]:
+                    if st.button(opcion, key=f"opt_nc_{ikey}_{opcion}",
+                                use_container_width=True):
+                        st.session_state[_sugerencia_key] = opcion
+                        st.rerun()
 
         with dc2:
             fecha_picker = st.date_input("Fecha Solicitud NC",
@@ -1581,329 +1581,334 @@ with nav[tab_reglas_idx]:
         """)
 
 # ════════════════════════════════════════════════════════════════
-#   PESTAÑA: ASIGNAR NC (solo Admin)
+#   PESTAÑA UNIFICADA: GESTIÓN NC (con sub-pestañas)
 # ════════════════════════════════════════════════════════════════
-if es_admin and IDX_ASIGNAR is not None:
-    with nav[IDX_ASIGNAR]:
-        st.markdown("<div class='admin-hdr'>🗂️ Asignar Nota de Crédito</div>",
-                    unsafe_allow_html=True)
+with nav[IDX_GESTION]:
+    st.markdown("<div class='sec-hdr'>🗂️ Gestión de Notas de Crédito</div>",
+                unsafe_allow_html=True)
 
-        with st.expander("➕ Crear nueva NC", expanded=False):
-            with st.form("form_nueva_nc"):
-                nc_ext = st.text_input("Número de nota de crédito externa")
+    _sub_labels = []
+    if es_admin:
+        _sub_labels.append("➕ Asignar NC")
+    _sub_labels += ["📌 NC Asignadas", "✅ NC Concluidas", "🗃️ NC Creadas"]
+    sub_nav = st.tabs(_sub_labels)
 
-                usuarios_lista = obtener_usuarios()
-                nombres_usr = [u["nombre_completo"] for u in usuarios_lista if u["activo"]]
-                resp_sel = st.selectbox("Encargado responsable de la NC", nombres_usr)
+    _si = 0
+    if es_admin:
+        with sub_nav[_si]:
+            st.markdown("<div class='admin-hdr'>🗂️ Asignar Nota de Crédito</div>",
+                        unsafe_allow_html=True)
 
-                fecha_sol_nc = st.date_input("Fecha de solicitud de NC",
-                                              value=hoy_mx(), format="DD/MM/YYYY")
+            with st.expander("➕ Crear nueva NC", expanded=False):
+                with st.form("form_nueva_nc"):
+                    nc_ext = st.text_input("Número de nota de crédito externa")
 
-                vincular = st.checkbox("🔗 Vincular NC anterior")
-                nc_vinc_id = None
-                if vincular:
-                    todas_nc = obtener_nc_asignaciones()
-                    opciones_vinc = {f"{nc['nc_externo']} ({nc['id'][:8]})": nc["id"]
-                                     for nc in todas_nc}
-                    busq_vinc = st.text_input("Buscar NC para vincular")
-                    filtradas = {k: v for k, v in opciones_vinc.items()
-                                 if busq_vinc.upper() in k.upper()} if busq_vinc else opciones_vinc
-                    if filtradas:
-                        sel_vinc = st.selectbox("Selecciona la NC anterior", list(filtradas.keys()))
-                        nc_vinc_id = filtradas.get(sel_vinc)
-                    else:
-                        st.caption("Sin coincidencias")
+                    usuarios_lista = obtener_usuarios()
+                    nombres_usr = [u["nombre_completo"] for u in usuarios_lista if u["activo"]]
+                    resp_sel = st.selectbox("Encargado responsable de la NC", nombres_usr)
 
-                if st.form_submit_button("Crear NC", type="primary"):
-                    if not nc_ext or not resp_sel:
-                        st.warning("Completa todos los campos obligatorios")
-                    else:
-                        resp_obj = next((u for u in usuarios_lista
-                                          if u["nombre_completo"] == resp_sel), None)
-                        ok, res = crear_nc_asignacion(
-                            nc_ext, resp_obj["id"], resp_obj["nombre_completo"],
-                            fecha_sol_nc.isoformat(), usuario["id"], nc_vinc_id
-                        )
-                        if ok:
-                            st.success(f"NC {nc_ext} creada y asignada a {resp_sel}")
-                            st.rerun()
+                    fecha_sol_nc = st.date_input("Fecha de solicitud de NC",
+                                                  value=hoy_mx(), format="DD/MM/YYYY")
+
+                    vincular = st.checkbox("🔗 Vincular NC anterior")
+                    nc_vinc_id = None
+                    if vincular:
+                        todas_nc = obtener_nc_asignaciones()
+                        opciones_vinc = {f"{nc['nc_externo']} ({nc['id'][:8]})": nc["id"]
+                                         for nc in todas_nc}
+                        busq_vinc = st.text_input("Buscar NC para vincular")
+                        filtradas = {k: v for k, v in opciones_vinc.items()
+                                     if busq_vinc.upper() in k.upper()} if busq_vinc else opciones_vinc
+                        if filtradas:
+                            sel_vinc = st.selectbox("Selecciona la NC anterior", list(filtradas.keys()))
+                            nc_vinc_id = filtradas.get(sel_vinc)
                         else:
-                            st.error(f"Error: {res}")
+                            st.caption("Sin coincidencias")
 
-        st.markdown("### Todas las NCs asignadas")
-        busq_asig = st.text_input("🔍 Buscar por NC, contenedor o factura", key="busq_asignar")
-        todas = buscar_nc_asignaciones(busq_asig) if busq_asig.strip() else obtener_nc_asignaciones()
+                    if st.form_submit_button("Crear NC", type="primary"):
+                        if not nc_ext or not resp_sel:
+                            st.warning("Completa todos los campos obligatorios")
+                        else:
+                            resp_obj = next((u for u in usuarios_lista
+                                              if u["nombre_completo"] == resp_sel), None)
+                            ok, res = crear_nc_asignacion(
+                                nc_ext, resp_obj["id"], resp_obj["nombre_completo"],
+                                fecha_sol_nc.isoformat(), usuario["id"], nc_vinc_id
+                            )
+                            if ok:
+                                st.success(f"NC {nc_ext} creada y asignada a {resp_sel}")
+                                st.rerun()
+                            else:
+                                st.error(f"Error: {res}")
 
-        COLOR_VISUAL = {
-            "nuevo":        ("🔵", "#E3F2FD"),
-            "seguimiento":  ("🟢", "#E8F5E9"),
-            "reasignado":   ("🟡", "#FFFDE7"),
-        }
+            st.markdown("### Todas las NCs asignadas")
+            busq_asig = st.text_input("🔍 Buscar por NC, contenedor o factura", key="busq_asignar")
+            todas = buscar_nc_asignaciones(busq_asig) if busq_asig.strip() else obtener_nc_asignaciones()
 
-        for nc in todas:
+            COLOR_VISUAL = {
+                "nuevo":        ("🔵", "#E3F2FD"),
+                "seguimiento":  ("🟢", "#E8F5E9"),
+                "reasignado":   ("🟡", "#FFFDE7"),
+            }
+
+            for nc in todas:
+                vis = nc.get("estado_visual", "nuevo")
+                icono, bg = COLOR_VISUAL.get(vis, ("⚪", "#F5F5F5"))
+                inhab = " ⛔ INHABILITADA" if nc.get("inhabilitada") else ""
+                vinc_txt = ""
+                if nc.get("vinculada_a"):
+                    nc_padre = obtener_nc_por_id(nc["vinculada_a"])
+                    if nc_padre:
+                        vinc_txt = f" 🔗 vinculada con {nc_padre['nc_externo']}"
+
+                with st.expander(f"{icono} {nc['nc_externo']} — {nc['responsable_nombre']} "
+                                 f"— {nc['estatus']}{inhab}{vinc_txt}"):
+                    st.write(f"**NC Externo:** {nc['nc_externo']}")
+                    st.write(f"**NC Interno:** {nc.get('nc_interno') or '—'}")
+                    st.write(f"**Responsable actual:** {nc['responsable_nombre']}")
+                    st.write(f"**Fecha solicitud:** {nc.get('fecha_solicitud', '—')}")
+                    st.write(f"**Estatus:** {nc['estatus']}")
+                    if nc.get("cliente"):
+                        st.write(f"**Cliente:** {nc['cliente']}")
+                    if nc.get("numero_factura"):
+                        st.write(f"**Factura:** {nc['numero_factura']}")
+
+                    ra1, ra2 = st.columns(2)
+                    with ra1:
+                        nuevos_resp = [u["nombre_completo"] for u in usuarios_lista if u["activo"]]
+                        idx_actual = (nuevos_resp.index(nc["responsable_nombre"])
+                                      if nc["responsable_nombre"] in nuevos_resp else 0)
+                        nuevo_resp_sel = st.selectbox(
+                            "Reasignar a:", nuevos_resp, index=idx_actual,
+                            key=f"reasig_{nc['id']}"
+                        )
+                        if nuevo_resp_sel != nc["responsable_nombre"]:
+                            if st.button("Confirmar reasignación", key=f"btn_reasig_{nc['id']}"):
+                                nuevo_obj = next((u for u in usuarios_lista
+                                                  if u["nombre_completo"] == nuevo_resp_sel), None)
+                                reasignar_nc(nc["id"], nuevo_obj["id"], nuevo_obj["nombre_completo"])
+                                st.success("Reasignado correctamente")
+                                st.rerun()
+                    with ra2:
+                        if not nc.get("inhabilitada"):
+                            with st.popover("⛔ Inhabilitar NC"):
+                                motivo_inhab = st.text_area("Motivo", key=f"motinhab_{nc['id']}")
+                                if st.button("Confirmar inhabilitar", key=f"btninhab_{nc['id']}"):
+                                    if motivo_inhab.strip():
+                                        inhabilitar_nc(nc["id"], motivo_inhab.strip())
+                                        st.success("NC inhabilitada")
+                                        st.rerun()
+                                    else:
+                                        st.warning("Escribe un motivo")
+        _si += 1
+
+    with sub_nav[_si]:
+        st.markdown("<div class='sec-hdr'>📌 NC Asignadas</div>", unsafe_allow_html=True)
+
+        if es_admin:
+            lista_nc = [n for n in obtener_nc_asignaciones() if not n.get("concluida")]
+        else:
+            lista_nc = [n for n in obtener_nc_asignaciones(responsable_id=usuario["id"])
+                        if not n.get("concluida")]
+
+        motivos_disp = [m["texto"] for m in obtener_nc_motivos()]
+        estatus_disp = [e["texto"] for e in obtener_nc_estatus()]
+        estatus_concluido_set = {e["texto"] for e in obtener_nc_estatus() if e.get("es_concluido")}
+
+        if not lista_nc:
+            st.info("No tienes NCs asignadas pendientes.")
+
+        for nc in lista_nc:
             vis = nc.get("estado_visual", "nuevo")
-            icono, bg = COLOR_VISUAL.get(vis, ("⚪", "#F5F5F5"))
-            inhab = " ⛔ INHABILITADA" if nc.get("inhabilitada") else ""
-            vinc_txt = ""
-            if nc.get("vinculada_a"):
-                nc_padre = obtener_nc_por_id(nc["vinculada_a"])
-                if nc_padre:
-                    vinc_txt = f" 🔗 vinculada con {nc_padre['nc_externo']}"
+            icono = {"nuevo": "🔵", "seguimiento": "🟢", "reasignado": "🟡"}.get(vis, "⚪")
+            inhab = " ⛔" if nc.get("inhabilitada") else ""
 
-            with st.expander(f"{icono} {nc['nc_externo']} — {nc['responsable_nombre']} "
-                             f"— {nc['estatus']}{inhab}{vinc_txt}"):
+            with st.expander(f"{icono} {nc['nc_externo']} — {nc['estatus']}{inhab}",
+                             expanded=False):
+                marcar_seguimiento_nc(nc["id"])
+
+                st.markdown("**Información fija (no editable):**")
+                fi1, fi2, fi3 = st.columns(3)
+                fi1.text_input("Fecha que se subió", value=str(nc.get("fecha_creacion",""))[:10],
+                               disabled=True, key=f"ffija1_{nc['id']}")
+                fi2.text_input("NC Externo", value=nc["nc_externo"], disabled=True,
+                               key=f"ffija2_{nc['id']}")
+                fi3.text_input("Responsable", value=nc["responsable_nombre"], disabled=True,
+                               key=f"ffija3_{nc['id']}")
+
+                if nc.get("cliente") or nc.get("numero_factura"):
+                    st.caption(f"Cliente: {nc.get('cliente','—')}  |  "
+                              f"Factura: {nc.get('numero_factura','—')}")
+
+                st.markdown("---")
+                st.markdown("**Información a completar:**")
+
+                nc_int = st.text_input("NC Interno", value=nc.get("nc_interno") or "",
+                                       key=f"ncint_{nc['id']}")
+
+                idx_mot = (motivos_disp.index(nc["motivo"])
+                           if nc.get("motivo") in motivos_disp else 0) if motivos_disp else 0
+                motivo_sel = st.selectbox("Motivo de la solicitud de NC",
+                                          motivos_disp if motivos_disp else ["—"],
+                                          index=idx_mot, key=f"motivo_{nc['id']}")
+
+                idx_est = (estatus_disp.index(nc["estatus"])
+                           if nc.get("estatus") in estatus_disp else 0) if estatus_disp else 0
+                estatus_sel = st.selectbox("Estatus de la NC",
+                                           estatus_disp if estatus_disp else ["—"],
+                                           index=idx_est, key=f"estatus_{nc['id']}")
+
+                nc_emitida = ""
+                if estatus_sel in estatus_concluido_set or "PENDIENTE POR EMITIR" in estatus_sel:
+                    nc_emitida = st.text_input("Número de NC emitida",
+                                               value=nc.get("numero_nc_emitida") or "",
+                                               key=f"ncemit_{nc['id']}")
+
+                st.markdown("**Contenedores** (pega el texto, se detectan automáticamente)")
+                conts_texto = st.text_area("Pegar contenedores",
+                                           value=nc.get("contenedores") or "",
+                                           key=f"contstxt_{nc['id']}", height=80)
+                conts_extraidos = extraer_contenedores(conts_texto) if conts_texto else \
+                                  (nc.get("contenedores") or "").split(",")
+                conts_extraidos = [c.strip() for c in conts_extraidos if c.strip()]
+
+                if conts_extraidos:
+                    st.caption(f"{len(conts_extraidos)} contenedor(es) detectado(s)")
+                    st.dataframe(pd.DataFrame({"Contenedor": conts_extraidos}),
+                                use_container_width=True, hide_index=True, height=150)
+
+                comentarios_nc = st.text_area("Comentarios de la NC",
+                                              value=nc.get("comentarios") or "",
+                                              key=f"coment_{nc['id']}")
+
+                if st.button("💾 Guardar información", type="primary",
+                            key=f"guardar_nc_{nc['id']}"):
+                    # Verificar duplicados de contenedores contra otras NC
+                    dups = verificar_contenedores_en_nc(conts_extraidos, excluir_nc_id=nc["id"])
+                    if dups:
+                        st.session_state[f"dups_pendientes_{nc['id']}"] = dups
+                        st.rerun()
+                    else:
+                        datos_guardar = {
+                            "nc_interno":   nc_int,
+                            "motivo":       motivo_sel,
+                            "estatus":      estatus_sel,
+                            "contenedores": ", ".join(conts_extraidos),
+                            "comentarios":  comentarios_nc,
+                        }
+                        if nc_emitida:
+                            datos_guardar["numero_nc_emitida"] = nc_emitida
+                        if estatus_sel in estatus_concluido_set and nc_emitida:
+                            datos_guardar["concluida"] = True
+                        actualizar_nc_asignacion(nc["id"], datos_guardar)
+                        st.success("Información guardada")
+                        st.rerun()
+
+                # Mostrar alertas de duplicados pendientes de decisión
+                if st.session_state.get(f"dups_pendientes_{nc['id']}"):
+                    dups = st.session_state[f"dups_pendientes_{nc['id']}"]
+                    for dup in dups:
+                        if not dup["concluida"]:
+                            st.warning(
+                                f"⚠️ El contenedor **{dup['contenedor']}** ya se encuentra en "
+                                f"la solicitud **{dup['nc_externo']}**, vigente y asignada a "
+                                f"**{dup['responsable_nombre']}**. Favor validar si no hay "
+                                f"duplicidad. ¿Solicitud duplicada?"
+                            )
+                        else:
+                            st.warning(
+                                f"⚠️ Los contenedores de la solicitud ya se encuentran en una "
+                                f"NC **finalizada**: **{dup['nc_externo']}**. "
+                                f"¿Solicitud duplicada?"
+                            )
+                        dd1, dd2 = st.columns(2)
+                        with dd1:
+                            if st.button(f"Sí, es duplicada de {dup['nc_externo']}",
+                                        key=f"dupsi_{nc['id']}_{dup['contenedor']}"):
+                                inhabilitar_nc(nc["id"],
+                                    f"Solicitud duplicada con la {dup['nc_externo']}")
+                                del st.session_state[f"dups_pendientes_{nc['id']}"]
+                                st.success("NC marcada como duplicada e inhabilitada")
+                                st.rerun()
+                        with dd2:
+                            if st.button("No, continuar normalmente",
+                                        key=f"dupno_{nc['id']}_{dup['contenedor']}"):
+                                registrar_duplicado_revisado(
+                                    nc["id"], dup["contenedor"], usuario["nombre_completo"]
+                                )
+                                datos_guardar = {
+                                    "nc_interno":   nc_int,
+                                    "motivo":       motivo_sel,
+                                    "estatus":      estatus_sel,
+                                    "contenedores": ", ".join(conts_extraidos),
+                                    "comentarios":  comentarios_nc,
+                                }
+                                if nc_emitida:
+                                    datos_guardar["numero_nc_emitida"] = nc_emitida
+                                if estatus_sel in estatus_concluido_set and nc_emitida:
+                                    datos_guardar["concluida"] = True
+                                actualizar_nc_asignacion(nc["id"], datos_guardar)
+                                del st.session_state[f"dups_pendientes_{nc['id']}"]
+                                st.success("🔍 Revisado — información guardada")
+                                st.rerun()
+    _si += 1
+
+    with sub_nav[_si]:
+        st.markdown("<div class='sec-hdr'>✅ NC Concluidas</div>", unsafe_allow_html=True)
+
+        concluidas = [n for n in obtener_nc_asignaciones() if n.get("concluida")]
+        if not es_admin:
+            concluidas = [n for n in concluidas if n["responsable_id"] == usuario["id"]]
+
+        if not concluidas:
+            st.info("No hay NCs concluidas.")
+
+        for nc in concluidas:
+            with st.expander(f"✅ {nc['nc_externo']} — {nc.get('numero_nc_emitida','—')} "
+                             f"— {nc['responsable_nombre']}"):
                 st.write(f"**NC Externo:** {nc['nc_externo']}")
                 st.write(f"**NC Interno:** {nc.get('nc_interno') or '—'}")
-                st.write(f"**Responsable actual:** {nc['responsable_nombre']}")
-                st.write(f"**Fecha solicitud:** {nc.get('fecha_solicitud', '—')}")
+                st.write(f"**NC Emitida:** {nc.get('numero_nc_emitida') or '—'}")
+                st.write(f"**Responsable:** {nc['responsable_nombre']}")
+                st.write(f"**Motivo:** {nc.get('motivo') or '—'}")
                 st.write(f"**Estatus:** {nc['estatus']}")
-                if nc.get("cliente"):
-                    st.write(f"**Cliente:** {nc['cliente']}")
-                if nc.get("numero_factura"):
-                    st.write(f"**Factura:** {nc['numero_factura']}")
+                if nc.get("comentarios"):
+                    st.write(f"**Comentarios:** {nc['comentarios']}")
+                if nc.get("contenedores"):
+                    conts_c = [c.strip() for c in nc["contenedores"].split(",") if c.strip()]
+                    st.dataframe(pd.DataFrame({"Contenedor": conts_c}),
+                                use_container_width=True, hide_index=True)
 
-                ra1, ra2 = st.columns(2)
-                with ra1:
-                    nuevos_resp = [u["nombre_completo"] for u in usuarios_lista if u["activo"]]
-                    idx_actual = (nuevos_resp.index(nc["responsable_nombre"])
-                                  if nc["responsable_nombre"] in nuevos_resp else 0)
-                    nuevo_resp_sel = st.selectbox(
-                        "Reasignar a:", nuevos_resp, index=idx_actual,
-                        key=f"reasig_{nc['id']}"
-                    )
-                    if nuevo_resp_sel != nc["responsable_nombre"]:
-                        if st.button("Confirmar reasignación", key=f"btn_reasig_{nc['id']}"):
-                            nuevo_obj = next((u for u in usuarios_lista
-                                              if u["nombre_completo"] == nuevo_resp_sel), None)
-                            reasignar_nc(nc["id"], nuevo_obj["id"], nuevo_obj["nombre_completo"])
-                            st.success("Reasignado correctamente")
-                            st.rerun()
-                with ra2:
-                    if not nc.get("inhabilitada"):
-                        with st.popover("⛔ Inhabilitar NC"):
-                            motivo_inhab = st.text_area("Motivo", key=f"motinhab_{nc['id']}")
-                            if st.button("Confirmar inhabilitar", key=f"btninhab_{nc['id']}"):
-                                if motivo_inhab.strip():
-                                    inhabilitar_nc(nc["id"], motivo_inhab.strip())
-                                    st.success("NC inhabilitada")
-                                    st.rerun()
-                                else:
-                                    st.warning("Escribe un motivo")
+                if es_admin:
+                    if st.button("↩️ Reabrir y regresar a NC Asignadas",
+                                key=f"reabrir_{nc['id']}"):
+                        reabrir_nc(nc["id"])
+                        st.success("NC reabierta")
+                        st.rerun()
+    _si += 1
 
-# ════════════════════════════════════════════════════════════════
-#   PESTAÑA: NC ASIGNADAS
-# ════════════════════════════════════════════════════════════════
-with nav[IDX_NC_ASIGNADAS]:
-    st.markdown("<div class='sec-hdr'>📌 NC Asignadas</div>", unsafe_allow_html=True)
+    with sub_nav[_si]:
+        st.markdown("<div class='sec-hdr'>🗃️ NC Creadas</div>", unsafe_allow_html=True)
+        st.caption("Vista de solo lectura — consulta el estatus de cualquier NC en el sistema.")
 
-    if es_admin:
-        lista_nc = [n for n in obtener_nc_asignaciones() if not n.get("concluida")]
-    else:
-        lista_nc = [n for n in obtener_nc_asignaciones(responsable_id=usuario["id"])
-                    if not n.get("concluida")]
+        busq_creadas = st.text_input("🔍 Buscar por NC, contenedor o factura", key="busq_creadas")
+        todas_creadas = (buscar_nc_asignaciones(busq_creadas)
+                         if busq_creadas.strip() else obtener_nc_asignaciones())
 
-    motivos_disp = [m["texto"] for m in obtener_nc_motivos()]
-    estatus_disp = [e["texto"] for e in obtener_nc_estatus()]
-    estatus_concluido_set = {e["texto"] for e in obtener_nc_estatus() if e.get("es_concluido")}
-
-    if not lista_nc:
-        st.info("No tienes NCs asignadas pendientes.")
-
-    for nc in lista_nc:
-        vis = nc.get("estado_visual", "nuevo")
-        icono = {"nuevo": "🔵", "seguimiento": "🟢", "reasignado": "🟡"}.get(vis, "⚪")
-        inhab = " ⛔" if nc.get("inhabilitada") else ""
-
-        with st.expander(f"{icono} {nc['nc_externo']} — {nc['estatus']}{inhab}",
-                         expanded=False):
-            marcar_seguimiento_nc(nc["id"])
-
-            st.markdown("**Información fija (no editable):**")
-            fi1, fi2, fi3 = st.columns(3)
-            fi1.text_input("Fecha que se subió", value=str(nc.get("fecha_creacion",""))[:10],
-                           disabled=True, key=f"ffija1_{nc['id']}")
-            fi2.text_input("NC Externo", value=nc["nc_externo"], disabled=True,
-                           key=f"ffija2_{nc['id']}")
-            fi3.text_input("Responsable", value=nc["responsable_nombre"], disabled=True,
-                           key=f"ffija3_{nc['id']}")
-
-            if nc.get("cliente") or nc.get("numero_factura"):
-                st.caption(f"Cliente: {nc.get('cliente','—')}  |  "
-                          f"Factura: {nc.get('numero_factura','—')}")
-
-            st.markdown("---")
-            st.markdown("**Información a completar:**")
-
-            nc_int = st.text_input("NC Interno", value=nc.get("nc_interno") or "",
-                                   key=f"ncint_{nc['id']}")
-
-            idx_mot = (motivos_disp.index(nc["motivo"])
-                       if nc.get("motivo") in motivos_disp else 0) if motivos_disp else 0
-            motivo_sel = st.selectbox("Motivo de la solicitud de NC",
-                                      motivos_disp if motivos_disp else ["—"],
-                                      index=idx_mot, key=f"motivo_{nc['id']}")
-
-            idx_est = (estatus_disp.index(nc["estatus"])
-                       if nc.get("estatus") in estatus_disp else 0) if estatus_disp else 0
-            estatus_sel = st.selectbox("Estatus de la NC",
-                                       estatus_disp if estatus_disp else ["—"],
-                                       index=idx_est, key=f"estatus_{nc['id']}")
-
-            nc_emitida = ""
-            if estatus_sel in estatus_concluido_set or "PENDIENTE POR EMITIR" in estatus_sel:
-                nc_emitida = st.text_input("Número de NC emitida",
-                                           value=nc.get("numero_nc_emitida") or "",
-                                           key=f"ncemit_{nc['id']}")
-
-            st.markdown("**Contenedores** (pega el texto, se detectan automáticamente)")
-            conts_texto = st.text_area("Pegar contenedores",
-                                       value=nc.get("contenedores") or "",
-                                       key=f"contstxt_{nc['id']}", height=80)
-            conts_extraidos = extraer_contenedores(conts_texto) if conts_texto else \
-                              (nc.get("contenedores") or "").split(",")
-            conts_extraidos = [c.strip() for c in conts_extraidos if c.strip()]
-
-            if conts_extraidos:
-                st.caption(f"{len(conts_extraidos)} contenedor(es) detectado(s)")
-                st.dataframe(pd.DataFrame({"Contenedor": conts_extraidos}),
-                            use_container_width=True, hide_index=True, height=150)
-
-            comentarios_nc = st.text_area("Comentarios de la NC",
-                                          value=nc.get("comentarios") or "",
-                                          key=f"coment_{nc['id']}")
-
-            if st.button("💾 Guardar información", type="primary",
-                        key=f"guardar_nc_{nc['id']}"):
-                # Verificar duplicados de contenedores contra otras NC
-                dups = verificar_contenedores_en_nc(conts_extraidos, excluir_nc_id=nc["id"])
-                if dups:
-                    st.session_state[f"dups_pendientes_{nc['id']}"] = dups
-                    st.rerun()
-                else:
-                    datos_guardar = {
-                        "nc_interno":   nc_int,
-                        "motivo":       motivo_sel,
-                        "estatus":      estatus_sel,
-                        "contenedores": ", ".join(conts_extraidos),
-                        "comentarios":  comentarios_nc,
-                    }
-                    if nc_emitida:
-                        datos_guardar["numero_nc_emitida"] = nc_emitida
-                    if estatus_sel in estatus_concluido_set and nc_emitida:
-                        datos_guardar["concluida"] = True
-                    actualizar_nc_asignacion(nc["id"], datos_guardar)
-                    st.success("Información guardada")
-                    st.rerun()
-
-            # Mostrar alertas de duplicados pendientes de decisión
-            if st.session_state.get(f"dups_pendientes_{nc['id']}"):
-                dups = st.session_state[f"dups_pendientes_{nc['id']}"]
-                for dup in dups:
-                    if not dup["concluida"]:
-                        st.warning(
-                            f"⚠️ El contenedor **{dup['contenedor']}** ya se encuentra en "
-                            f"la solicitud **{dup['nc_externo']}**, vigente y asignada a "
-                            f"**{dup['responsable_nombre']}**. Favor validar si no hay "
-                            f"duplicidad. ¿Solicitud duplicada?"
-                        )
-                    else:
-                        st.warning(
-                            f"⚠️ Los contenedores de la solicitud ya se encuentran en una "
-                            f"NC **finalizada**: **{dup['nc_externo']}**. "
-                            f"¿Solicitud duplicada?"
-                        )
-                    dd1, dd2 = st.columns(2)
-                    with dd1:
-                        if st.button(f"Sí, es duplicada de {dup['nc_externo']}",
-                                    key=f"dupsi_{nc['id']}_{dup['contenedor']}"):
-                            inhabilitar_nc(nc["id"],
-                                f"Solicitud duplicada con la {dup['nc_externo']}")
-                            del st.session_state[f"dups_pendientes_{nc['id']}"]
-                            st.success("NC marcada como duplicada e inhabilitada")
-                            st.rerun()
-                    with dd2:
-                        if st.button("No, continuar normalmente",
-                                    key=f"dupno_{nc['id']}_{dup['contenedor']}"):
-                            registrar_duplicado_revisado(
-                                nc["id"], dup["contenedor"], usuario["nombre_completo"]
-                            )
-                            datos_guardar = {
-                                "nc_interno":   nc_int,
-                                "motivo":       motivo_sel,
-                                "estatus":      estatus_sel,
-                                "contenedores": ", ".join(conts_extraidos),
-                                "comentarios":  comentarios_nc,
-                            }
-                            if nc_emitida:
-                                datos_guardar["numero_nc_emitida"] = nc_emitida
-                            if estatus_sel in estatus_concluido_set and nc_emitida:
-                                datos_guardar["concluida"] = True
-                            actualizar_nc_asignacion(nc["id"], datos_guardar)
-                            del st.session_state[f"dups_pendientes_{nc['id']}"]
-                            st.success("🔍 Revisado — información guardada")
-                            st.rerun()
-
-# ════════════════════════════════════════════════════════════════
-#   PESTAÑA: NC CONCLUIDAS
-# ════════════════════════════════════════════════════════════════
-with nav[IDX_NC_CONCLUIDAS]:
-    st.markdown("<div class='sec-hdr'>✅ NC Concluidas</div>", unsafe_allow_html=True)
-
-    concluidas = [n for n in obtener_nc_asignaciones() if n.get("concluida")]
-    if not es_admin:
-        concluidas = [n for n in concluidas if n["responsable_id"] == usuario["id"]]
-
-    if not concluidas:
-        st.info("No hay NCs concluidas.")
-
-    for nc in concluidas:
-        with st.expander(f"✅ {nc['nc_externo']} — {nc.get('numero_nc_emitida','—')} "
-                         f"— {nc['responsable_nombre']}"):
-            st.write(f"**NC Externo:** {nc['nc_externo']}")
-            st.write(f"**NC Interno:** {nc.get('nc_interno') or '—'}")
-            st.write(f"**NC Emitida:** {nc.get('numero_nc_emitida') or '—'}")
-            st.write(f"**Responsable:** {nc['responsable_nombre']}")
-            st.write(f"**Motivo:** {nc.get('motivo') or '—'}")
-            st.write(f"**Estatus:** {nc['estatus']}")
-            if nc.get("comentarios"):
-                st.write(f"**Comentarios:** {nc['comentarios']}")
-            if nc.get("contenedores"):
-                conts_c = [c.strip() for c in nc["contenedores"].split(",") if c.strip()]
-                st.dataframe(pd.DataFrame({"Contenedor": conts_c}),
-                            use_container_width=True, hide_index=True)
-
-            if es_admin:
-                if st.button("↩️ Reabrir y regresar a NC Asignadas",
-                            key=f"reabrir_{nc['id']}"):
-                    reabrir_nc(nc["id"])
-                    st.success("NC reabierta")
-                    st.rerun()
-
-# ════════════════════════════════════════════════════════════════
-#   PESTAÑA: NC CREADAS (solo lectura para todos)
-# ════════════════════════════════════════════════════════════════
-with nav[IDX_NC_CREADAS]:
-    st.markdown("<div class='sec-hdr'>🗃️ NC Creadas</div>", unsafe_allow_html=True)
-    st.caption("Vista de solo lectura — consulta el estatus de cualquier NC en el sistema.")
-
-    busq_creadas = st.text_input("🔍 Buscar por NC, contenedor o factura", key="busq_creadas")
-    todas_creadas = (buscar_nc_asignaciones(busq_creadas)
-                     if busq_creadas.strip() else obtener_nc_asignaciones())
-
-    if todas_creadas:
-        tabla_creadas = []
-        for nc in todas_creadas:
-            tabla_creadas.append({
-                "NC Interno":  nc.get("nc_interno") or "—",
-                "NC Externo":  nc["nc_externo"],
-                "Contenedores": (nc.get("contenedores") or "")[:60],
-                "Estatus":     nc["estatus"],
-                "Comentarios": (nc.get("comentarios") or "")[:60],
-                "Responsable": nc["responsable_nombre"],
-            })
-        st.dataframe(pd.DataFrame(tabla_creadas), use_container_width=True, hide_index=True)
-    else:
-        st.info("No se encontraron NCs.")
+        if todas_creadas:
+            tabla_creadas = []
+            for nc in todas_creadas:
+                tabla_creadas.append({
+                    "NC Interno":  nc.get("nc_interno") or "—",
+                    "NC Externo":  nc["nc_externo"],
+                    "Contenedores": (nc.get("contenedores") or "")[:60],
+                    "Estatus":     nc["estatus"],
+                    "Comentarios": (nc.get("comentarios") or "")[:60],
+                    "Responsable": nc["responsable_nombre"],
+                })
+            st.dataframe(pd.DataFrame(tabla_creadas), use_container_width=True, hide_index=True)
+        else:
+            st.info("No se encontraron NCs.")
 
 if es_admin and IDX_USUARIOS is not None:
     with nav[IDX_USUARIOS]:

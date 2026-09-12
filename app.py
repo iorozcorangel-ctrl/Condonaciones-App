@@ -384,32 +384,24 @@ with nav[0]:
         # Reset NC y fecha — usar input_key para forzar re-render
         ikey = st.session_state["uploader_key"]
 
-        # ── Campo único de N° NC con sugerencias de NCs asignadas ─────
+        # ── Campo único de N° NC — solo se puede elegir de la lista ───
         nc_asignadas_disp = obtener_nc_asignaciones()
-        nombres_nc_asig   = [nc["nc_externo"] for nc in nc_asignadas_disp]
+        # Deduplicar nombres conservando orden
+        nombres_nc_asig = []
+        for nc in nc_asignadas_disp:
+            if nc["nc_externo"] not in nombres_nc_asig:
+                nombres_nc_asig.append(nc["nc_externo"])
 
-        _nc_key = f"nc_input_{ikey}"
-
-        # Si el usuario eligió una sugerencia, precargar ese valor una vez
-        _sugerencia_key = f"nc_sugerencia_{ikey}"
-        if st.session_state.get(_sugerencia_key):
-            st.session_state[_nc_key] = st.session_state.pop(_sugerencia_key)
-
-        nc_input = dc1.text_input("N° Nota de Crédito",
-                                   placeholder="Ej: NC-2585",
-                                   disabled=bloqueado,
-                                   key=_nc_key)
-
-        if nombres_nc_asig and not bloqueado:
-            with dc1.popover("🔎 Elegir de NCs asignadas existentes"):
-                busq_nc_sug = st.text_input("Buscar", key=f"busq_nc_sug_{ikey}")
-                filtradas_sug = [n for n in nombres_nc_asig
-                                 if busq_nc_sug.upper() in n.upper()] if busq_nc_sug else nombres_nc_asig
-                for opcion in filtradas_sug[:20]:
-                    if st.button(opcion, key=f"opt_nc_{ikey}_{opcion}",
-                                use_container_width=True):
-                        st.session_state[_sugerencia_key] = opcion
-                        st.rerun()
+        if not nombres_nc_asig:
+            dc1.info("No hay NCs asignadas aún. Pide al administrador que "
+                     "cree una en Gestión NC → Asignar NC.")
+            nc_input = ""
+        else:
+            opciones_nc = ["-- Selecciona una NC --"] + sorted(nombres_nc_asig)
+            nc_sel = dc1.selectbox("N° Nota de Crédito",
+                                   opciones_nc, disabled=bloqueado,
+                                   key=f"nc_sel_{ikey}")
+            nc_input = "" if nc_sel == "-- Selecciona una NC --" else nc_sel
 
         with dc2:
             fecha_picker = st.date_input("Fecha Solicitud NC",

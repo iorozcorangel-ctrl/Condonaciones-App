@@ -126,6 +126,7 @@ def init():
         "nc_reset":          False,
         "nc_val":            "",
         "fecha_val":         None,
+        "reporte_bytes":     None,
         "previo_manual_activo": False,
         "contadores_previo": {},
         "paso_previo":       "inicio",
@@ -510,6 +511,7 @@ with nav[0]:
                 st.session_state["montos"]             = {}
                 st.session_state["alertas"]            = []
                 st.session_state["paso"]               = "inicio"
+                st.session_state["reporte_bytes"]      = None
                 st.session_state["uploader_key"] += 1
                 st.rerun()
 
@@ -555,6 +557,7 @@ with nav[0]:
                     st.error(e)
                 st.session_state["df_tab"]       = None
                 st.session_state["df_bi"]        = None
+                st.session_state["reporte_bytes"] = None
                 st.session_state["uploader_key"] += 1
                 st.rerun()
 
@@ -1049,37 +1052,44 @@ with nav[0]:
                 st.warning(f"Cobro Admin y Control sin almacenajes: "
                            f"{', '.join(admon_sin)}")
 
-            with st.spinner("Generando reporte Excel..."):
-                buffer = io.BytesIO()
-                generar_reporte(df_tv, df_bv, desfases, montos,
-                                fecha_sol, fecha_rev, nc, {}, buffer)
-                buffer.seek(0)
-                excel_bytes = buffer.getvalue()
+            # ── Generar el reporte y hacer la herencia UNA SOLA VEZ ──
+            # (sin esta protección, este bloque se re-ejecutaba en cada clic
+            # en cualquier parte de la app, regenerando el Excel y creando
+            # NCs huérfanas duplicadas una y otra vez)
+            if not st.session_state.get("reporte_bytes"):
+                with st.spinner("Generando reporte Excel..."):
+                    buffer = io.BytesIO()
+                    generar_reporte(df_tv, df_bv, desfases, montos,
+                                    fecha_sol, fecha_rev, nc, {}, buffer)
+                    buffer.seek(0)
+                    st.session_state["reporte_bytes"] = buffer.getvalue()
 
-            # ── Heredar Cliente y Factura hacia NC Asignada ─────
-            cliente_val  = ""
-            factura_val  = ""
-            for _, row in df_bv.iterrows():
-                if not cliente_val and row.get(COL_BI.get("cliente")):
-                    cliente_val = str(row.get(COL_BI.get("cliente")))
-                if not factura_val and row.get(COL_BI.get("no_factura")):
-                    factura_val = str(row.get(COL_BI.get("no_factura")))
-                if cliente_val and factura_val:
-                    break
+                # ── Heredar Cliente y Factura hacia NC Asignada (una vez) ──
+                cliente_val  = ""
+                factura_val  = ""
+                for _, row in df_bv.iterrows():
+                    if not cliente_val and row.get(COL_BI.get("cliente")):
+                        cliente_val = str(row.get(COL_BI.get("cliente")))
+                    if not factura_val and row.get(COL_BI.get("no_factura")):
+                        factura_val = str(row.get(COL_BI.get("no_factura")))
+                    if cliente_val and factura_val:
+                        break
 
-            nc_existente = next(
-                (n for n in _cached_nc_asignaciones() if n["nc_externo"] == nc), None
-            )
-            if nc_existente:
-                actualizar_herencia_analisis(nc_existente["id"], cliente_val, factura_val)
-            else:
-                # Crear registro huérfano para que el admin lo gestione
-                ok_h, id_h = crear_nc_asignacion(
-                    nc, usuario["id"], usuario["nombre_completo"],
-                    fecha_sol.isoformat(), usuario["id"]
+                nc_existente = next(
+                    (n for n in obtener_nc_asignaciones() if n["nc_externo"] == nc), None
                 )
-                if ok_h:
-                    actualizar_herencia_analisis(id_h, cliente_val, factura_val)
+                if nc_existente:
+                    actualizar_herencia_analisis(nc_existente["id"], cliente_val, factura_val)
+                else:
+                    ok_h, id_h = crear_nc_asignacion(
+                        nc, usuario["id"], usuario["nombre_completo"],
+                        fecha_sol.isoformat(), usuario["id"]
+                    )
+                    if ok_h:
+                        actualizar_herencia_analisis(id_h, cliente_val, factura_val)
+                invalidar_cache_nc()
+
+            excel_bytes = st.session_state["reporte_bytes"]
 
             # ── Registrar en BD al descargar ──────────────────
             if "nc_registrada" not in st.session_state:
@@ -1125,6 +1135,7 @@ with nav[0]:
                 st.session_state["paso"]               = "inicio"
                 st.session_state["uploader_key"]      += 1
                 st.session_state["nc_registrada"]      = False
+                st.session_state["reporte_bytes"]      = None
                 st.session_state["cond_manual"]        = False
                 st.session_state["dias_manual_previo"] = 0
                 st.session_state["dias_manual_ffcc"]   = 0
@@ -1755,7 +1766,14 @@ with nav[IDX_GESTION]:
 
             with st.expander(f"{icono} {nc['nc_externo']} — {nc['estatus']}{inhab}",
                              expanded=False):
-                marcar_seguimiento_nc(nc["id"])
+                # Marcar seguimiento SOLO una vez por sesión, no en cada rerun
+                # (el código de un expander corre siempre, esté abierto o no)
+                _seguim_key = f"seguim_marcado_{nc['id']}"
+                if not st.session_state.get(_seguim_key, False):
+                    if nc.get("estado_visual") != "seguimiento":
+                        actualizar_nc_asignacion(nc["id"], {"estado_visual": "seguimiento"})
+                        invalidar_cache_nc()
+                    st.session_state[_seguim_key] = True
 
                 st.markdown("**Información fija (no editable):**")
                 fi1, fi2, fi3 = st.columns(3)

@@ -167,6 +167,20 @@ if not st.session_state.get("autenticado"):
 #   PANTALLA DE LOGIN
 # ════════════════════════════════════════════════════════════════
 if not st.session_state.get("autenticado") or st.session_state.get("usuario") is None:
+    # Diagnóstico crudo: mostrar la URL REAL que ve el navegador,
+    # directo desde JavaScript, sin pasar por Python/Streamlit
+    st.components.v1.html("""
+        <div style="background:#B71C1C;color:white;padding:10px 14px;
+                    border-radius:6px;font-family:monospace;font-size:13px;
+                    word-break:break-all;">
+            <b>URL real del navegador (JS):</b><br>
+            <span id="urlreal"></span>
+        </div>
+        <script>
+            document.getElementById('urlreal').innerText = window.location.href;
+        </script>
+    """, height=70)
+
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
         if st.session_state.get("_diag_sesion"):
@@ -176,7 +190,7 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
 
         st.markdown("""
         <div style='text-align:center;padding:40px 0 20px;'>
-          <h2 style='color:#E65100;'>🚢 Sistema de Condonaciones</h2>
+          <div style='color:#E65100;font-size:28px;font-weight:600;margin:0;'>🚢 Sistema de Condonaciones</div>
           <p style='color:#666;'>Terminal Portuaria Pacífico</p>
         </div>
         """, unsafe_allow_html=True)
@@ -254,11 +268,23 @@ rol_badge   = "badge-admin" if es_admin else "badge-user"
 rol_label   = "Administrador" if es_admin else "Usuario"
 
 # ── Barra superior ──────────────────────────────────────────────
+st.components.v1.html("""
+    <div style="background:#B71C1C;color:white;padding:10px 14px;
+                border-radius:6px;font-family:monospace;font-size:13px;
+                word-break:break-all;margin-bottom:8px;">
+        <b>URL real del navegador (JS) — YA AUTENTICADO:</b><br>
+        <span id="urlreal2"></span>
+    </div>
+    <script>
+        document.getElementById('urlreal2').innerText = window.location.href;
+    </script>
+""", height=70)
+
 col_titulo, col_user = st.columns([4, 1])
 with col_titulo:
     st.markdown("""
     <div class='topbar'>
-      <h1>🚢 Sistema de Condonaciones</h1>
+      <div style="font-size:22px;font-weight:600;color:white;margin:0;">🚢 Sistema de Condonaciones</div>
       <p>Terminal Portuaria · Análisis de Condonaciones</p>
     </div>
     """, unsafe_allow_html=True)

@@ -137,16 +137,15 @@ def init():
 
 init()
 
-# ── Restaurar sesión: URL (?sid=) + cookie de sesión ────────────
-# La cookie NO tiene fecha de expiración ("session cookie"), por lo que
-# el propio navegador la borra al cerrarse por completo. Así, aunque el
-# token dure hasta 2 días en la base de datos, si el usuario cierra el
-# navegador la sesión se pierde de inmediato.
+# ── Restaurar sesión desde el token en la URL (?sid=...) ────────
+# Este es el mecanismo confiable: mientras la URL conserve ?sid=..., la
+# sesión se restaura automáticamente al recargar (F5), navegar o volver
+# a abrir la pestaña. El token vence de forma ABSOLUTA a los 2 días
+# (ver DIAS_MAX_SESION en database.py), sin importar el uso.
 if not st.session_state.get("autenticado"):
     try:
         params = st.query_params
         token  = params.get("sid", "")
-
         if token:
             from app.database import verificar_sesion as _vs
             usuario_tok = _vs(token)
@@ -157,27 +156,6 @@ if not st.session_state.get("autenticado"):
                 st.rerun()
             else:
                 st.query_params.clear()
-        else:
-            # No hay token en la URL: intentar recuperarlo de la cookie
-            # de sesión (solo existe si el navegador sigue abierto desde
-            # el último login). Si la cookie tiene valor, redirige
-            # agregando ?sid=... a la URL para que Python pueda leerlo.
-            st.components.v1.html("""
-                <script>
-                function getCookie(name) {
-                    const v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
-                    return v ? v.pop() : '';
-                }
-                const sid = getCookie('cond_sid');
-                if (sid) {
-                    const url = new URL(window.parent.location.href);
-                    if (!url.searchParams.get('sid')) {
-                        url.searchParams.set('sid', sid);
-                        window.parent.location.replace(url.toString());
-                    }
-                }
-                </script>
-            """, height=0)
     except Exception:
         pass
 
@@ -206,19 +184,13 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
                     if usuario:
                         st.session_state["autenticado"]   = True
                         st.session_state["usuario"]       = usuario
-                        # Crear sesión en BD, guardar token en URL y en
-                        # una cookie de SESIÓN (sin expiración) para que el
-                        # propio navegador la borre al cerrarse por completo
+                        # Crear sesión en BD (expira a los 2 días) y
+                        # guardar el token en la URL para persistencia
                         from app.database import crear_sesion as _cs
                         tok = _cs(usuario["id"], usuario["username"])
                         if tok:
                             st.session_state["session_token"] = tok
                             st.query_params["sid"] = tok
-                            st.components.v1.html(f"""
-                                <script>
-                                document.cookie = "cond_sid={tok}; path=/; SameSite=Lax";
-                                </script>
-                            """, height=0)
                         st.rerun()
                     else:
                         st.error("Usuario o contraseña incorrectos")
@@ -242,11 +214,6 @@ if st.session_state.get("session_token") and (_time.time() - _ultima_verif > 120
     if not _check:
         # Sesión vencida (más de 2 días desde el login)
         st.query_params.clear()
-        st.components.v1.html("""
-            <script>
-            document.cookie = "cond_sid=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/;";
-            </script>
-        """, height=0)
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.rerun()
@@ -299,12 +266,6 @@ with col_user:
             from app.database import eliminar_sesion as _es
             _es(st.session_state.get("session_token", ""))
             st.query_params.clear()
-            # Borrar también la cookie de sesión
-            st.components.v1.html("""
-                <script>
-                document.cookie = "cond_sid=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/;";
-                </script>
-            """, height=0)
         except Exception:
             pass
         for k in list(st.session_state.keys()):

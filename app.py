@@ -138,26 +138,30 @@ def init():
 init()
 
 # ── Restaurar sesión desde el token en la URL (?sid=...) ────────
-# Este es el mecanismo confiable: mientras la URL conserve ?sid=..., la
-# sesión se restaura automáticamente al recargar (F5), navegar o volver
-# a abrir la pestaña. El token vence de forma ABSOLUTA a los 2 días
-# (ver DIAS_MAX_SESION en database.py), sin importar el uso.
 if not st.session_state.get("autenticado"):
+    _diag = {}
     try:
         params = st.query_params
         token  = params.get("sid", "")
+        _diag["token_en_url"] = bool(token)
+        _diag["token_preview"] = (token[:8] + "...") if token else "(vacío)"
         if token:
             from app.database import verificar_sesion as _vs
             usuario_tok = _vs(token)
+            _diag["verificacion_ok"] = bool(usuario_tok)
             if usuario_tok:
                 st.session_state["autenticado"]   = True
                 st.session_state["usuario"]       = usuario_tok
                 st.session_state["session_token"] = token
                 st.rerun()
             else:
+                st.session_state["_diag_sesion"] = _diag
                 st.query_params.clear()
-    except Exception:
-        pass
+        else:
+            st.session_state["_diag_sesion"] = _diag
+    except Exception as _e:
+        _diag["error"] = str(_e)
+        st.session_state["_diag_sesion"] = _diag
 
 # ════════════════════════════════════════════════════════════════
 #   PANTALLA DE LOGIN
@@ -165,6 +169,11 @@ if not st.session_state.get("autenticado"):
 if not st.session_state.get("autenticado") or st.session_state.get("usuario") is None:
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
+        if st.session_state.get("_diag_sesion"):
+            with st.expander("🔧 Diagnóstico de sesión (temporal)", expanded=True):
+                st.json(st.session_state["_diag_sesion"])
+                st.caption("URL actual completa: " + str(dict(st.query_params)))
+
         st.markdown("""
         <div style='text-align:center;padding:40px 0 20px;'>
           <h2 style='color:#E65100;'>🚢 Mi Mini Puerto</h2>

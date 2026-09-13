@@ -74,7 +74,7 @@ from app.database import (login_usuario, obtener_usuarios, crear_usuario,
                            registrar_duplicado_revisado)
 
 st.set_page_config(
-    page_title="Mi Mini Puerto: Solicitudes de reclamo",
+    page_title="Sistema de Condonaciones",
     page_icon="🚢",
     layout="wide"
 )
@@ -176,7 +176,7 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
 
         st.markdown("""
         <div style='text-align:center;padding:40px 0 20px;'>
-          <h2 style='color:#E65100;'>🚢 Mi Mini Puerto</h2>
+          <h2 style='color:#E65100;'>🚢 Sistema de Condonaciones</h2>
           <p style='color:#666;'>Terminal Portuaria Pacífico</p>
         </div>
         """, unsafe_allow_html=True)
@@ -258,7 +258,7 @@ col_titulo, col_user = st.columns([4, 1])
 with col_titulo:
     st.markdown("""
     <div class='topbar'>
-      <h1>🚢 Mi Mini Puerto: Solicitudes de reclamo</h1>
+      <h1>🚢 Sistema de Condonaciones</h1>
       <p>Terminal Portuaria · Análisis de Condonaciones</p>
     </div>
     """, unsafe_allow_html=True)

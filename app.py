@@ -137,24 +137,47 @@ def init():
 
 init()
 
-# ── Restaurar sesión desde token en URL ─────────────────────────
-# El token en la URL persiste en F5 pero NO entre cierres de navegador
-# ya que la sesión expira por inactividad (3 horas)
+# ── Restaurar sesión: URL (?sid=) + cookie de sesión ────────────
+# La cookie NO tiene fecha de expiración ("session cookie"), por lo que
+# el propio navegador la borra al cerrarse por completo. Así, aunque el
+# token dure hasta 2 días en la base de datos, si el usuario cierra el
+# navegador la sesión se pierde de inmediato.
 if not st.session_state.get("autenticado"):
     try:
         params = st.query_params
         token  = params.get("sid", "")
+
         if token:
             from app.database import verificar_sesion as _vs
-            usuario_tok = _vs(token)  # También actualiza última actividad
+            usuario_tok = _vs(token)
             if usuario_tok:
                 st.session_state["autenticado"]   = True
                 st.session_state["usuario"]       = usuario_tok
                 st.session_state["session_token"] = token
                 st.rerun()
             else:
-                # Token inválido o expirado por inactividad — limpiar URL
                 st.query_params.clear()
+        else:
+            # No hay token en la URL: intentar recuperarlo de la cookie
+            # de sesión (solo existe si el navegador sigue abierto desde
+            # el último login). Si la cookie tiene valor, redirige
+            # agregando ?sid=... a la URL para que Python pueda leerlo.
+            st.components.v1.html("""
+                <script>
+                function getCookie(name) {
+                    const v = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+                    return v ? v.pop() : '';
+                }
+                const sid = getCookie('cond_sid');
+                if (sid) {
+                    const url = new URL(window.parent.location.href);
+                    if (!url.searchParams.get('sid')) {
+                        url.searchParams.set('sid', sid);
+                        window.parent.location.replace(url.toString());
+                    }
+                }
+                </script>
+            """, height=0)
     except Exception:
         pass
 
@@ -183,12 +206,19 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
                     if usuario:
                         st.session_state["autenticado"]   = True
                         st.session_state["usuario"]       = usuario
-                        # Crear sesión en BD y guardar token en URL
+                        # Crear sesión en BD, guardar token en URL y en
+                        # una cookie de SESIÓN (sin expiración) para que el
+                        # propio navegador la borre al cerrarse por completo
                         from app.database import crear_sesion as _cs
                         tok = _cs(usuario["id"], usuario["username"])
                         if tok:
                             st.session_state["session_token"] = tok
                             st.query_params["sid"] = tok
+                            st.components.v1.html(f"""
+                                <script>
+                                document.cookie = "cond_sid={tok}; path=/; SameSite=Lax";
+                                </script>
+                            """, height=0)
                         st.rerun()
                     else:
                         st.error("Usuario o contraseña incorrectos")
@@ -201,8 +231,8 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
 usuario     = st.session_state["usuario"]
 es_admin    = usuario["rol"] == "admin"
 
-# ── Verificar inactividad — solo cada 2 minutos, no en cada render ──
-# (evita un round-trip a Supabase por cada clic, que hacía sentir lenta la app)
+# ── Verificar expiración absoluta (2 días) — cada 2 minutos, no en cada
+#    render (evita un round-trip a Supabase por cada clic) ──────────────
 import time as _time
 _ultima_verif = st.session_state.get("_ultima_verif_sesion", 0)
 if st.session_state.get("session_token") and (_time.time() - _ultima_verif > 120):
@@ -210,8 +240,13 @@ if st.session_state.get("session_token") and (_time.time() - _ultima_verif > 120
     _check = _vs2(st.session_state["session_token"])
     st.session_state["_ultima_verif_sesion"] = _time.time()
     if not _check:
-        # Sesión expirada por inactividad
+        # Sesión vencida (más de 2 días desde el login)
         st.query_params.clear()
+        st.components.v1.html("""
+            <script>
+            document.cookie = "cond_sid=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/;";
+            </script>
+        """, height=0)
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.rerun()
@@ -264,6 +299,12 @@ with col_user:
             from app.database import eliminar_sesion as _es
             _es(st.session_state.get("session_token", ""))
             st.query_params.clear()
+            # Borrar también la cookie de sesión
+            st.components.v1.html("""
+                <script>
+                document.cookie = "cond_sid=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/;";
+                </script>
+            """, height=0)
         except Exception:
             pass
         for k in list(st.session_state.keys()):

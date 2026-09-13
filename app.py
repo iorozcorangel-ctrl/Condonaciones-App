@@ -174,7 +174,7 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
         with st.form("login"):
             username = st.text_input("Usuario", placeholder="Ingresa tu usuario")
             password = st.text_input("Contraseña", type="password")
-            if st.form_submit_button("Entrar", use_container_width=True):
+            if st.form_submit_button("Entrar", width='stretch'):
                 if not username or not password:
                     st.warning("Ingresa usuario y contraseña")
                 else:
@@ -259,7 +259,7 @@ with col_user:
       <span class='{rol_badge}'>{rol_label}</span>
     </div>
     """, unsafe_allow_html=True)
-    if st.button("🚪 Salir", use_container_width=True):
+    if st.button("🚪 Salir", width='stretch'):
         try:
             from app.database import eliminar_sesion as _es
             _es(st.session_state.get("session_token", ""))
@@ -320,14 +320,14 @@ with nav[0]:
                 if perfil_sel_id:
                     guardar_ultimo_perfil_db(usuario["id"], perfil_sel_id)
         with c2:
-            if st.button("➕ Nuevo", use_container_width=True, disabled=bloqueado):
+            if st.button("➕ Nuevo", width='stretch', disabled=bloqueado):
                 st.session_state["mostrar_form_perfil"] = "nuevo"
         with c3:
-            if st.button("✏️ Editar", use_container_width=True,
+            if st.button("✏️ Editar", width='stretch',
                          disabled=nuevo_idx==0 or bloqueado):
                 st.session_state["mostrar_form_perfil"] = "editar"
         with c4:
-            if st.button("🗑️", use_container_width=True,
+            if st.button("🗑️", width='stretch',
                          disabled=nuevo_idx==0 or bloqueado):
                 perfil_id = perfiles[nuevo_idx].get("id", "")
                 if perfil_id:
@@ -363,7 +363,7 @@ with nav[0]:
                                        p.get("dias_carretero", 2),
                                        disabled=na_c)
                 bg1, bg2 = st.columns(2)
-                if bg1.button("💾 Guardar", use_container_width=True):
+                if bg1.button("💾 Guardar", width='stretch'):
                     if nombre_p:
                         np2 = {"nombre": nombre_p, "es_default": False,
                                "regla1_activa": r1, "regla2_activa": r2,
@@ -384,7 +384,7 @@ with nav[0]:
                             st.session_state["perfiles"][nuevo_idx] = np2
                         st.session_state["mostrar_form_perfil"] = None
                         st.rerun()
-                if bg2.button("Cancelar", use_container_width=True):
+                if bg2.button("Cancelar", width='stretch'):
                     st.session_state["mostrar_form_perfil"] = None
                     st.rerun()
 
@@ -500,9 +500,9 @@ with nav[0]:
         with bb1:
             iniciar = st.button("▶ Iniciar Análisis",
                                 disabled=not ambos or bloqueado,
-                                use_container_width=True, type="primary")
+                                width='stretch', type="primary")
         with bb2:
-            if st.button("↺ Nuevo Análisis", use_container_width=True):
+            if st.button("↺ Nuevo Análisis", width='stretch'):
                 st.session_state["df_tab"]             = None
                 st.session_state["df_bi"]              = None
                 st.session_state["df_tab_v"]           = None
@@ -756,7 +756,7 @@ with nav[0]:
             pa1, pa2 = st.columns(2)
             with pa1:
                 if st.button("✅ Sí, ajustar manualmente", type="primary",
-                             use_container_width=True, key="previo_si"):
+                             width='stretch', key="previo_si"):
                     st.session_state["paso"] = "previo_manual"
                     if "contadores_previo" not in st.session_state:
                         st.session_state["contadores_previo"] = {}
@@ -766,7 +766,7 @@ with nav[0]:
                     st.rerun()
             with pa2:
                 if st.button("No, continuar con cálculo automático",
-                             use_container_width=True, key="previo_no"):
+                             width='stretch', key="previo_no"):
                     eliminar_borradores_nc(usr["id"], nc)
                     st.session_state["paso"] = "confirmacion"
                     st.rerun()
@@ -861,7 +861,7 @@ with nav[0]:
                             if pnum > 1:
                                 if st.button("🗑️ Eliminar",
                                              key=f"del_{cont}_{pnum}",
-                                             use_container_width=True):
+                                             width='stretch'):
                                     # Eliminar de BD
                                     try:
                                         from app.database import get_client as _gc2
@@ -924,7 +924,7 @@ with nav[0]:
 
             st.markdown("---")
             if st.button("💾 Calcular desfases y continuar",
-                         type="primary", use_container_width=True,
+                         type="primary", width='stretch',
                          key="calc_previos"):
                 desfases = st.session_state["desfases"]
                 dias_p   = perfil.get("dias_previo", 3)
@@ -970,19 +970,19 @@ with nav[0]:
                         "Carretero":  d["desfase_carretero"],
                         "Total":      d["total_desfase"]}
                        for c, d in desfases.items()]
-            st.dataframe(pd.DataFrame(resumen), use_container_width=True,
+            st.dataframe(pd.DataFrame(resumen), width='stretch',
                          hide_index=True)
 
             st.markdown("**¿Estás de acuerdo con los días de desfase calculados?**")
             cc1, cc2 = st.columns(2)
             with cc1:
                 if st.button("✅ Sí, generar reporte", type="primary",
-                             use_container_width=True, key="btn_si"):
+                             width='stretch', key="btn_si"):
                     st.session_state["paso"] = "reporte"
                     st.rerun()
             with cc2:
                 if st.button("✏️ No, ajustar manualmente",
-                             use_container_width=True, key="btn_no"):
+                             width='stretch', key="btn_no"):
                     st.session_state["paso"] = "ajuste"
                     st.rerun()
 
@@ -1012,7 +1012,7 @@ with nav[0]:
                         )
 
             if st.button("💾 Guardar y generar reporte", type="primary",
-                         use_container_width=True):
+                         width='stretch'):
                 for cont in contenedores:
                     if checks.get(cont, True):
                         desfases[cont]["total_desfase"] = int(dias_global)
@@ -1119,12 +1119,12 @@ with nav[0]:
                 data=excel_bytes,
                 file_name=f"{nc or 'reporte'}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
+                width='stretch',
                 on_click=on_download
             )
 
             st.markdown("---")
-            if st.button("↺ Realizar nuevo análisis", use_container_width=True):
+            if st.button("↺ Realizar nuevo análisis", width='stretch'):
                 st.session_state["df_tab"]             = None
                 st.session_state["df_bi"]              = None
                 st.session_state["df_tab_v"]           = None
@@ -1206,7 +1206,7 @@ with nav[0]:
                 else:           bg = "  "
 
                 if dcols[i].button(f"{bg}{dia}", key=f"c_{fecha}",
-                                    use_container_width=True):
+                                    width='stretch'):
                     if fecha in st.session_state["dias_especiales"]:
                         st.session_state["dias_especiales"].discard(fecha)
                     else:
@@ -1364,7 +1364,7 @@ with nav[1]:
                             if detalle:
                                 df_det = pd.DataFrame(detalle)
                                 df_det.columns = ["Contenedor", "N° Factura"]
-                                st.dataframe(df_det, use_container_width=True,
+                                st.dataframe(df_det, width='stretch',
                                              hide_index=True)
                             else:
                                 st.info("Sin detalle disponible.")
@@ -1798,7 +1798,7 @@ with nav[IDX_GESTION]:
                                            index=idx_est, key=f"estatus_{nc['id']}")
 
                 nc_emitida = ""
-                if estatus_sel in estatus_concluido_set or "PENDIENTE POR EMITIR" in estatus_sel:
+                if estatus_sel == "NOTA DE CREDITO EMITIDA":
                     nc_emitida = st.text_input("Número de NC emitida",
                                                value=nc.get("numero_nc_emitida") or "",
                                                key=f"ncemit_{nc['id']}")
@@ -1814,7 +1814,7 @@ with nav[IDX_GESTION]:
                 if conts_extraidos:
                     st.caption(f"{len(conts_extraidos)} contenedor(es) detectado(s)")
                     st.dataframe(pd.DataFrame({"Contenedor": conts_extraidos}),
-                                use_container_width=True, hide_index=True, height=150)
+                                width='stretch', hide_index=True, height=150)
 
                 comentarios_nc = st.text_area("Comentarios de la NC",
                                               value=nc.get("comentarios") or "",
@@ -1925,7 +1925,7 @@ with nav[IDX_GESTION]:
                 if nc.get("contenedores"):
                     conts_c = [c.strip() for c in nc["contenedores"].split(",") if c.strip()]
                     st.dataframe(pd.DataFrame({"Contenedor": conts_c}),
-                                use_container_width=True, hide_index=True)
+                                width='stretch', hide_index=True)
 
                 if es_admin:
                     if st.button("↩️ Reabrir y regresar a NC Asignadas",
@@ -1955,7 +1955,7 @@ with nav[IDX_GESTION]:
                     "Comentarios": (nc.get("comentarios") or "")[:60],
                     "Responsable": nc["responsable_nombre"],
                 })
-            st.dataframe(pd.DataFrame(tabla_creadas), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(tabla_creadas), width='stretch', hide_index=True)
         else:
             st.info("No se encontraron NCs.")
 

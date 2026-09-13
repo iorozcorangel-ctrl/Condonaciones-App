@@ -414,24 +414,34 @@ with nav[0]:
         # Reset NC y fecha — usar input_key para forzar re-render
         ikey = st.session_state["uploader_key"]
 
-        # ── Campo único de N° NC — solo se puede elegir de la lista ───
-        nc_asignadas_disp = _cached_nc_asignaciones()
-        # Deduplicar nombres conservando orden
-        nombres_nc_asig = []
-        for nc in nc_asignadas_disp:
-            if nc["nc_externo"] not in nombres_nc_asig:
-                nombres_nc_asig.append(nc["nc_externo"])
+        # ── Campo de N° NC: lista (default) o captura manual ───────────
+        captura_manual_nc = st.checkbox("✏️ Capturar manualmente NC",
+                                        disabled=bloqueado,
+                                        key=f"captura_manual_nc_{ikey}")
 
-        if not nombres_nc_asig:
-            dc1.info("No hay NCs asignadas aún. Pide al administrador que "
-                     "cree una en Gestión NC → Asignar NC.")
-            nc_input = ""
+        if captura_manual_nc:
+            nc_input = dc1.text_input("N° Nota de Crédito (manual)",
+                                       placeholder="Ej: NC-2585",
+                                       disabled=bloqueado,
+                                       key=f"nc_manual_{ikey}")
         else:
-            opciones_nc = ["-- Selecciona una NC --"] + sorted(nombres_nc_asig)
-            nc_sel = dc1.selectbox("N° Nota de Crédito",
-                                   opciones_nc, disabled=bloqueado,
-                                   key=f"nc_sel_{ikey}")
-            nc_input = "" if nc_sel == "-- Selecciona una NC --" else nc_sel
+            nc_asignadas_disp = _cached_nc_asignaciones()
+            # Deduplicar nombres conservando orden
+            nombres_nc_asig = []
+            for nc in nc_asignadas_disp:
+                if nc["nc_externo"] not in nombres_nc_asig:
+                    nombres_nc_asig.append(nc["nc_externo"])
+
+            if not nombres_nc_asig:
+                dc1.info("No hay NCs asignadas aún. Marca 'Capturar manualmente NC' "
+                         "o pide al administrador que cree una en Gestión NC → Asignar NC.")
+                nc_input = ""
+            else:
+                opciones_nc = ["-- Selecciona una NC --"] + sorted(nombres_nc_asig)
+                nc_sel = dc1.selectbox("N° Nota de Crédito",
+                                       opciones_nc, disabled=bloqueado,
+                                       key=f"nc_sel_{ikey}")
+                nc_input = "" if nc_sel == "-- Selecciona una NC --" else nc_sel
 
         with dc2:
             fecha_picker = st.date_input("Fecha Solicitud NC",
@@ -1667,6 +1677,19 @@ with nav[IDX_GESTION]:
                         if not nc_ext or not resp_sel:
                             st.warning("Completa todos los campos obligatorios")
                         else:
+                            ya_existe = next(
+                                (n for n in obtener_nc_asignaciones()
+                                 if n["nc_externo"].strip().upper() == nc_ext.strip().upper()),
+                                None
+                            )
+                            if ya_existe:
+                                st.error(
+                                    f"⚠️ Ya existe una NC con el número **{nc_ext}** "
+                                    f"(asignada a **{ya_existe['responsable_nombre']}**, "
+                                    f"estatus: {ya_existe['estatus']}). Usa esa NC existente "
+                                    f"en la lista de abajo en lugar de crear una duplicada."
+                                )
+                                st.stop()
                             resp_obj = next((u for u in usuarios_lista
                                               if u["nombre_completo"] == resp_sel), None)
                             ok, res = crear_nc_asignacion(
@@ -1948,14 +1971,20 @@ with nav[IDX_GESTION]:
             tabla_creadas = []
             for nc in todas_creadas:
                 tabla_creadas.append({
-                    "NC Interno":  nc.get("nc_interno") or "—",
-                    "NC Externo":  nc["nc_externo"],
-                    "Contenedores": (nc.get("contenedores") or "")[:60],
-                    "Estatus":     nc["estatus"],
-                    "Comentarios": (nc.get("comentarios") or "")[:60],
-                    "Responsable": nc["responsable_nombre"],
+                    "NC Interno":   nc.get("nc_interno") or "—",
+                    "NC Externo":   nc["nc_externo"],
+                    "Contenedores": nc.get("contenedores") or "—",
+                    "Estatus":      nc["estatus"],
+                    "Comentarios":  nc.get("comentarios") or "—",
+                    "Responsable":  nc["responsable_nombre"],
                 })
-            st.dataframe(pd.DataFrame(tabla_creadas), width='stretch', hide_index=True)
+            st.dataframe(
+                pd.DataFrame(tabla_creadas), width='stretch', hide_index=True,
+                column_config={
+                    "Comentarios":  st.column_config.TextColumn(width="large"),
+                    "Contenedores": st.column_config.TextColumn(width="large"),
+                }
+            )
         else:
             st.info("No se encontraron NCs.")
 

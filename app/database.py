@@ -441,9 +441,8 @@ def crear_sesion(usuario_id: str, username: str) -> str:
             "ultima_actividad": ahora.isoformat(),
         }).execute()
         return token
-    except Exception as e:
-        # TEMPORAL: exponer el error real para diagnóstico
-        return f"ERROR::{e}"
+    except Exception:
+        return ""
 
 
 def verificar_sesion(token: str):

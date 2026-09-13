@@ -197,9 +197,11 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
                         # guardar el token en la URL para persistencia
                         from app.database import crear_sesion as _cs
                         tok = _cs(usuario["id"], usuario["username"])
-                        if tok:
+                        if tok and not tok.startswith("ERROR::"):
                             st.session_state["session_token"] = tok
                             st.query_params["sid"] = tok
+                        elif tok.startswith("ERROR::"):
+                            st.session_state["_error_crear_sesion"] = tok
                         st.rerun()
                     else:
                         st.error("Usuario o contraseña incorrectos")
@@ -256,13 +258,15 @@ rol_label   = "Administrador" if es_admin else "Usuario"
 # ── Barra superior ──────────────────────────────────────────────
 # Diagnóstico: ¿se generó el token de sesión correctamente?
 _tok_diag = st.session_state.get("session_token", "")
+_err_diag = st.session_state.get("_error_crear_sesion", "")
 st.markdown(
     f"<div style='background:#B71C1C;color:white;padding:10px 14px;"
     f"border-radius:6px;font-family:monospace;font-size:13px;"
     f"word-break:break-all;margin-bottom:8px;'>"
     f"<b>Diagnóstico:</b> session_token en memoria = "
     f"{'SÍ (' + _tok_diag[:8] + '...)' if _tok_diag else 'NO / VACÍO'}<br>"
-    f"query_params actuales = {dict(st.query_params)}"
+    f"query_params actuales = {dict(st.query_params)}<br>"
+    f"{'<b>ERROR crear_sesion:</b> ' + _err_diag if _err_diag else ''}"
     f"</div>",
     unsafe_allow_html=True
 )

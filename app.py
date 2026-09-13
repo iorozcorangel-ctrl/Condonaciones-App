@@ -1766,15 +1766,6 @@ with nav[IDX_GESTION]:
 
             with st.expander(f"{icono} {nc['nc_externo']} — {nc['estatus']}{inhab}",
                              expanded=False):
-                # Marcar seguimiento SOLO una vez por sesión, no en cada rerun
-                # (el código de un expander corre siempre, esté abierto o no)
-                _seguim_key = f"seguim_marcado_{nc['id']}"
-                if not st.session_state.get(_seguim_key, False):
-                    if nc.get("estado_visual") != "seguimiento":
-                        actualizar_nc_asignacion(nc["id"], {"estado_visual": "seguimiento"})
-                        invalidar_cache_nc()
-                    st.session_state[_seguim_key] = True
-
                 st.markdown("**Información fija (no editable):**")
                 fi1, fi2, fi3 = st.columns(3)
                 fi1.text_input("Fecha que se subió", value=str(nc.get("fecha_creacion",""))[:10],
@@ -1844,6 +1835,10 @@ with nav[IDX_GESTION]:
                             "contenedores": ", ".join(conts_extraidos),
                             "comentarios":  comentarios_nc,
                         }
+                        # Marcar como "en seguimiento" (verde) al guardar,
+                        # solo si sigue en su estado inicial "nuevo"
+                        if nc.get("estado_visual") == "nuevo":
+                            datos_guardar["estado_visual"] = "seguimiento"
                         if nc_emitida:
                             datos_guardar["numero_nc_emitida"] = nc_emitida
                         if estatus_sel in estatus_concluido_set and nc_emitida:
@@ -1893,6 +1888,8 @@ with nav[IDX_GESTION]:
                                     "contenedores": ", ".join(conts_extraidos),
                                     "comentarios":  comentarios_nc,
                                 }
+                                if nc.get("estado_visual") == "nuevo":
+                                    datos_guardar["estado_visual"] = "seguimiento"
                                 if nc_emitida:
                                     datos_guardar["numero_nc_emitida"] = nc_emitida
                                 if estatus_sel in estatus_concluido_set and nc_emitida:

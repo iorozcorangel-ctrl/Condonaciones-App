@@ -777,6 +777,48 @@ def desvincular_nc(nc_id: str):
         return False
 
 
+def fusionar_nc(nc_mantener_id: str, nc_absorbida_id: str):
+    """Fusiona dos NC que resultaron ser la misma solicitud repartida en 2 registros
+    (ej. capturada por 2 personas). La NC 'nc_mantener_id' sigue activa y es la que
+    da seguimiento de aquí en adelante; 'nc_absorbida_id' se inhabilita (no se borra,
+    para no perder rastro) y sus datos/contenedores/hijas se transfieren a la que
+    se conserva. Retorna (True, None) o (False, mensaje_error)."""
+    try:
+        if nc_mantener_id == nc_absorbida_id:
+            return False, "No se puede fusionar una NC consigo misma."
+        mantener = obtener_nc_por_id(nc_mantener_id)
+        absorbida = obtener_nc_por_id(nc_absorbida_id)
+        if not mantener or not absorbida:
+            return False, "No se encontró alguna de las dos NC."
+
+        conts_m = {c.strip() for c in (mantener.get("contenedores") or "").split(",") if c.strip()}
+        conts_a = {c.strip() for c in (absorbida.get("contenedores") or "").split(",") if c.strip()}
+        conts_unidos = ", ".join(sorted(conts_m | conts_a))
+
+        datos_actualizar = {}
+        if conts_unidos:
+            datos_actualizar["contenedores"] = conts_unidos
+        for campo in ("cliente", "numero_factura", "nc_interno", "motivo"):
+            if not mantener.get(campo) and absorbida.get(campo):
+                datos_actualizar[campo] = absorbida[campo]
+        nota_fusion = f"[Fusionada con la NC {absorbida['nc_externo']}] "
+        datos_actualizar["comentarios"] = nota_fusion + (mantener.get("comentarios") or "")
+        actualizar_nc_asignacion(nc_mantener_id, datos_actualizar)
+
+        # Las NC que dependían de la absorbida ahora dependen de la que se conserva
+        for hija in obtener_nc_hijas(nc_absorbida_id):
+            actualizar_nc_asignacion(hija["id"], {"vinculada_a": nc_mantener_id})
+
+        actualizar_nc_asignacion(nc_absorbida_id, {
+            "inhabilitada":          True,
+            "motivo_inhabilitacion": f"Fusionada con la NC {mantener['nc_externo']}",
+            "vinculada_a":           None,
+        })
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
 def actualizar_nc_asignacion(nc_id: str, datos: dict):
     """Actualiza campos de una NC asignada."""
     try:
@@ -917,12 +959,13 @@ def verificar_contenedores_en_nc(contenedores: list, excluir_nc_id: str = None):
     """
     Busca si alguno de los contenedores ya existe en otra NC asignada.
     Retorna lista de coincidencias: [{nc_id, nc_externo, contenedor,
-    responsable_nombre, concluida, inhabilitada}]
+    responsable_id, responsable_nombre, concluida, inhabilitada}]
     """
     try:
         db = get_client()
         res = db.table("nc_asignaciones").select(
-            "id, nc_externo, contenedores, responsable_nombre, concluida, inhabilitada"
+            "id, nc_externo, contenedores, responsable_id, responsable_nombre, "
+            "concluida, inhabilitada"
         ).execute()
         todas = res.data or []
         coincidencias = []
@@ -939,6 +982,7 @@ def verificar_contenedores_en_nc(contenedores: list, excluir_nc_id: str = None):
                         "nc_id":              nc["id"],
                         "nc_externo":         nc["nc_externo"],
                         "contenedor":         c,
+                        "responsable_id":     nc.get("responsable_id"),
                         "responsable_nombre": nc.get("responsable_nombre", ""),
                         "concluida":          nc.get("concluida", False),
                     })

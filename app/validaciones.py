@@ -293,9 +293,17 @@ def calcular_desfases(df_bi, dias_especiales, perfil):
         # Regla 3
         fecha_previo   = to_date(row.get(COL_BI["fecha_previo"]))
         fecha_posicion = to_date(row.get(COL_BI["fecha_posicion"]))
+        fecha_cancel   = to_date(row.get(COL_BI["fecha_cancel"]))
 
         if not fecha_previo:
             desfase_previo = 0
+        elif fecha_cancel:
+            # El AA canceló el previo y no esperó su posicionamiento: el
+            # desfase se calcula contra la fecha de cancelación en vez de
+            # la de posicionamiento, aunque esta última también tenga valor.
+            desfase_previo, _ = calcular_desfase_regla3(
+                fecha_previo, fecha_cancel, dias_especiales, dias_previo
+            )
         elif not fecha_posicion:
             desfase_previo = 0
         else:

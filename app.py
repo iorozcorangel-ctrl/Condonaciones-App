@@ -65,6 +65,7 @@ from app.database import (login_usuario, obtener_usuarios, crear_usuario,
                            eliminar_nc_estatus,
                            crear_nc_asignacion, obtener_nc_asignaciones,
                            obtener_nc_por_id, actualizar_nc_asignacion,
+                           obtener_nc_hijas, vincular_nc_existente, desvincular_nc,
                            reasignar_nc, inhabilitar_nc, marcar_seguimiento_nc,
                            concluir_nc, reabrir_nc, buscar_nc_asignaciones,
                            actualizar_herencia_analisis,
@@ -1086,8 +1087,10 @@ with nav[0]:
                     if cliente_val and factura_val:
                         break
 
+                nc_norm = nc.strip().upper()
                 nc_existente = next(
-                    (n for n in obtener_nc_asignaciones() if n["nc_externo"] == nc), None
+                    (n for n in obtener_nc_asignaciones()
+                     if n["nc_externo"].strip().upper() == nc_norm), None
                 )
                 if nc_existente:
                     actualizar_herencia_analisis(nc_existente["id"], cliente_val, factura_val)
@@ -1659,20 +1662,27 @@ with nav[IDX_GESTION]:
                     fecha_sol_nc = st.date_input("Fecha de solicitud de NC",
                                                   value=hoy_mx(), format="DD/MM/YYYY")
 
-                    vincular = st.checkbox("🔗 Vincular NC anterior")
+                    vincular = st.checkbox("🔗 Vincular a una NC raíz")
                     nc_vinc_id = None
                     if vincular:
                         todas_nc = _cached_nc_asignaciones()
+                        # Solo se ofrecen como raíz las NC que no dependen ya de otra,
+                        # para mantener la jerarquía a un solo nivel (raíz -> hijas).
+                        candidatas_raiz = [n for n in todas_nc
+                                           if not n.get("vinculada_a")
+                                           and not n.get("inhabilitada")]
                         opciones_vinc = {f"{nc['nc_externo']} ({nc['id'][:8]})": nc["id"]
-                                         for nc in todas_nc}
-                        busq_vinc = st.text_input("Buscar NC para vincular")
+                                         for nc in candidatas_raiz}
+                        busq_vinc = st.text_input("Buscar NC raíz")
                         filtradas = {k: v for k, v in opciones_vinc.items()
                                      if busq_vinc.upper() in k.upper()} if busq_vinc else opciones_vinc
                         if filtradas:
-                            sel_vinc = st.selectbox("Selecciona la NC anterior", list(filtradas.keys()))
+                            sel_vinc = st.selectbox("Selecciona la NC raíz", list(filtradas.keys()))
                             nc_vinc_id = filtradas.get(sel_vinc)
+                            st.caption("La nueva NC quedará como hija de la NC raíz seleccionada.")
                         else:
-                            st.caption("Sin coincidencias")
+                            st.caption("No hay NC disponibles para usar como raíz "
+                                       "(solo se muestran NC que no dependen ya de otra).")
 
                     if st.form_submit_button("Crear NC", type="primary"):
                         if not nc_ext or not resp_sel:
@@ -1714,6 +1724,8 @@ with nav[IDX_GESTION]:
                 "reasignado":   ("🟡", "#FFFDE7"),
             }
 
+            todas_completas = _cached_nc_asignaciones()  # sin filtro de búsqueda, para los selectores de vínculo
+
             for nc in todas:
                 vis = nc.get("estado_visual", "nuevo")
                 icono, bg = COLOR_VISUAL.get(vis, ("⚪", "#F5F5F5"))
@@ -1722,7 +1734,11 @@ with nav[IDX_GESTION]:
                 if nc.get("vinculada_a"):
                     nc_padre = obtener_nc_por_id(nc["vinculada_a"])
                     if nc_padre:
-                        vinc_txt = f" 🔗 vinculada con {nc_padre['nc_externo']}"
+                        vinc_txt = f" 🔗 depende de la NC raíz {nc_padre['nc_externo']}"
+                else:
+                    hijas_preview = obtener_nc_hijas(nc["id"])
+                    if hijas_preview:
+                        vinc_txt = (" 🌳 raíz de " + ", ".join(h["nc_externo"] for h in hijas_preview))
 
                 with st.expander(f"{icono} {nc['nc_externo']} — {nc['responsable_nombre']} "
                                  f"— {nc['estatus']}{inhab}{vinc_txt}"):
@@ -1735,6 +1751,56 @@ with nav[IDX_GESTION]:
                         st.write(f"**Cliente:** {nc['cliente']}")
                     if nc.get("numero_factura"):
                         st.write(f"**Factura:** {nc['numero_factura']}")
+
+                    st.markdown("---")
+                    st.markdown("**🔗 Vínculo con NC raíz**")
+                    if nc.get("vinculada_a"):
+                        nc_raiz_actual = obtener_nc_por_id(nc["vinculada_a"])
+                        if nc_raiz_actual:
+                            st.write(f"Esta NC depende de la NC raíz: **{nc_raiz_actual['nc_externo']}**")
+                            hermanas = [h for h in obtener_nc_hijas(nc["vinculada_a"])
+                                       if h["id"] != nc["id"]]
+                            if hermanas:
+                                st.caption("Otras NC que también dependen de esa raíz: " +
+                                          ", ".join(h["nc_externo"] for h in hermanas))
+                            if st.button("🔓 Quitar vínculo", key=f"desvinc_{nc['id']}"):
+                                desvincular_nc(nc["id"])
+                                st.success("Vínculo eliminado")
+                                invalidar_cache_nc()
+                                st.rerun()
+                        else:
+                            st.caption("—")
+                    else:
+                        hijas_actuales = obtener_nc_hijas(nc["id"])
+                        if hijas_actuales:
+                            st.write("Esta NC es la **raíz** de: " +
+                                    ", ".join(h["nc_externo"] for h in hijas_actuales))
+                            st.caption("Para cambiar esta jerarquía, primero quita el vínculo "
+                                      "de cada NC hija.")
+                        else:
+                            candidatas_vinc = [n for n in todas_completas
+                                               if n["id"] != nc["id"]
+                                               and not n.get("vinculada_a")
+                                               and not n.get("inhabilitada")]
+                            if candidatas_vinc:
+                                opciones_v2 = {f"{c['nc_externo']} ({c['id'][:8]})": c["id"]
+                                              for c in candidatas_vinc}
+                                sel_v2 = st.selectbox(
+                                    "Vincular esta NC a una NC raíz",
+                                    ["— Sin vínculo —"] + list(opciones_v2.keys()),
+                                    key=f"selvinc_{nc['id']}"
+                                )
+                                if sel_v2 != "— Sin vínculo —":
+                                    if st.button("🔗 Confirmar vínculo", key=f"btnvinc_{nc['id']}"):
+                                        ok_v, err_v = vincular_nc_existente(nc["id"], opciones_v2[sel_v2])
+                                        if ok_v:
+                                            st.success("NC vinculada correctamente")
+                                            invalidar_cache_nc()
+                                            st.rerun()
+                                        else:
+                                            st.error(err_v or "No se pudo vincular")
+                            else:
+                                st.caption("No hay otras NC disponibles para vincular.")
 
                     ra1, ra2 = st.columns(2)
                     with ra1:
@@ -1971,6 +2037,15 @@ with nav[IDX_GESTION]:
         if todas_creadas:
             tabla_creadas = []
             for nc in todas_creadas:
+                vinculo_txt = "—"
+                if nc.get("vinculada_a"):
+                    nc_raiz_c = obtener_nc_por_id(nc["vinculada_a"])
+                    if nc_raiz_c:
+                        vinculo_txt = f"Depende de {nc_raiz_c['nc_externo']}"
+                else:
+                    hijas_c = obtener_nc_hijas(nc["id"])
+                    if hijas_c:
+                        vinculo_txt = "Raíz de " + ", ".join(h["nc_externo"] for h in hijas_c)
                 tabla_creadas.append({
                     "NC Interno":   nc.get("nc_interno") or "—",
                     "NC Externo":   nc["nc_externo"],
@@ -1978,6 +2053,7 @@ with nav[IDX_GESTION]:
                     "Estatus":      nc["estatus"],
                     "Comentarios":  nc.get("comentarios") or "—",
                     "Responsable":  nc["responsable_nombre"],
+                    "Vínculo":      vinculo_txt,
                 })
             st.dataframe(
                 pd.DataFrame(tabla_creadas), width='stretch', hide_index=True,

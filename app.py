@@ -297,10 +297,8 @@ IDX_USUARIOS = 4 if es_admin else None
 if not st.session_state.get("notif_mostrado", False):
     notifs = obtener_notificaciones_pendientes(usuario["id"])
     if notifs:
-        with st.container():
-            st.info("🔔 **Notificaciones pendientes:**\n\n" + "\n\n".join(
-                f"• {n['mensaje']}" for n in notifs
-            ))
+        for n in notifs:
+            st.toast(f"🔔 {n['mensaje']}", icon="🔔")
         marcar_notificaciones_vistas(usuario["id"])
     st.session_state["notif_mostrado"] = True
 
@@ -1997,6 +1995,16 @@ with nav[IDX_GESTION]:
                 # "Rechazada" concluye la NC, pero se confirma antes de hacerlo
                 requiere_confirmacion_rechazo = "RECHAZ" in estatus_sel.upper()
 
+                def _debe_concluir():
+                    """Regla única: cuándo una NC debe quedar concluida, sin importar
+                    por cuál de los 3 caminos de guardado se llegue (normal, tras
+                    confirmar 'Rechazada', o tras revisar un duplicado)."""
+                    if "RECHAZ" in estatus_sel.upper():
+                        return True
+                    if estatus_sel in estatus_concluido_set and bool(nc_emitida):
+                        return True
+                    return False
+
                 def _datos_guardar_nc(marcar_concluida=False):
                     datos = {
                         "nc_interno":   nc_int,
@@ -2036,7 +2044,7 @@ with nav[IDX_GESTION]:
                         st.session_state[f"confirmar_concluir_{nc['id']}"] = True
                         st.rerun()
                     else:
-                        marcar_conc = estatus_sel in estatus_concluido_set and bool(nc_emitida)
+                        marcar_conc = _debe_concluir()
                         actualizar_nc_asignacion(nc["id"], _datos_guardar_nc(marcar_conc))
                         invalidar_cache_nc()
                         st.success("Información guardada")
@@ -2096,7 +2104,7 @@ with nav[IDX_GESTION]:
                                 registrar_duplicado_revisado(
                                     nc["id"], dup["contenedor"], usuario["nombre_completo"]
                                 )
-                                marcar_conc2 = estatus_sel in estatus_concluido_set and bool(nc_emitida)
+                                marcar_conc2 = _debe_concluir()
                                 actualizar_nc_asignacion(nc["id"], _datos_guardar_nc(marcar_conc2))
                                 del st.session_state[f"dups_pendientes_{nc['id']}"]
                                 st.success("🔍 Revisado — información guardada")

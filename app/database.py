@@ -845,11 +845,16 @@ def fusionar_nc(nc_mantener_id: str, nc_anterior_id: str):
 
 
 def actualizar_nc_asignacion(nc_id: str, datos: dict):
-    """Actualiza campos de una NC asignada."""
+    """Actualiza campos de una NC asignada. Si estos datos incluyen marcarla
+    como concluida y todavía no tenía fecha de cierre, la registra sola."""
     try:
         db = get_client()
         from datetime import datetime
         datos["fecha_actualizacion"] = datetime.utcnow().isoformat()
+        if datos.get("concluida") is True:
+            actual = obtener_nc_por_id(nc_id)
+            if not actual or not actual.get("fecha_cierre"):
+                datos["fecha_cierre"] = datetime.utcnow().isoformat()
         db.table("nc_asignaciones").update(datos).eq("id", nc_id).execute()
         return True
     except Exception:
@@ -903,8 +908,10 @@ def concluir_nc(nc_id: str):
 
 
 def reabrir_nc(nc_id: str):
+    """Reabre una NC concluida. Limpia la fecha de cierre — si se vuelve a
+    concluir más adelante, se registrará una fecha de cierre nueva."""
     try:
-        return actualizar_nc_asignacion(nc_id, {"concluida": False})
+        return actualizar_nc_asignacion(nc_id, {"concluida": False, "fecha_cierre": None})
     except Exception:
         return False
 

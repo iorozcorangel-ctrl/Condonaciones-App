@@ -2091,7 +2091,7 @@ with nav[IDX_GESTION]:
                         dd1, dd2 = st.columns(2)
                         with dd1:
                             if st.button(f"Sí, es duplicada de {dup['nc_externo']}",
-                                        key=f"dupsi_{nc['id']}_{dup['contenedor']}"):
+                                        key=f"dupsi_{nc['id']}_{dup['nc_id']}_{dup['contenedor']}"):
                                 inhabilitar_nc(nc["id"],
                                     f"Solicitud duplicada con la {dup['nc_externo']}")
                                 del st.session_state[f"dups_pendientes_{nc['id']}"]
@@ -2100,7 +2100,7 @@ with nav[IDX_GESTION]:
                                 st.rerun()
                         with dd2:
                             if st.button("No, continuar normalmente",
-                                        key=f"dupno_{nc['id']}_{dup['contenedor']}"):
+                                        key=f"dupno_{nc['id']}_{dup['nc_id']}_{dup['contenedor']}"):
                                 registrar_duplicado_revisado(
                                     nc["id"], dup["contenedor"], usuario["nombre_completo"]
                                 )

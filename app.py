@@ -75,7 +75,7 @@ from app.database import (login_usuario, obtener_usuarios, crear_usuario,
                            crear_nc_asignacion, obtener_nc_asignaciones,
                            obtener_nc_por_id, actualizar_nc_asignacion,
                            obtener_nc_hijas, vincular_nc_existente, desvincular_nc,
-                           fusionar_nc,
+                           fusionar_nc, eliminar_nc_asignacion,
                            reasignar_nc, inhabilitar_nc, marcar_seguimiento_nc,
                            concluir_nc, reabrir_nc, buscar_nc_asignaciones,
                            actualizar_herencia_analisis,
@@ -1750,11 +1750,12 @@ with nav[IDX_GESTION]:
                 if nc.get("vinculada_a"):
                     nc_padre = obtener_nc_por_id(nc["vinculada_a"])
                     if nc_padre:
-                        vinc_txt = f" 🔗 depende de la NC raíz {nc_padre['nc_externo']}"
+                        vinc_txt = f" 🔻 más baja (depende de {nc_padre['nc_externo']})"
                 else:
                     hijas_preview = obtener_nc_hijas(nc["id"])
                     if hijas_preview:
-                        vinc_txt = (" 🌳 raíz de " + ", ".join(h["nc_externo"] for h in hijas_preview))
+                        vinc_txt = (" 🔺 más alta — historial: " +
+                                   ", ".join(h["nc_externo"] for h in hijas_preview))
 
                 with st.expander(f"{icono} {nc['nc_externo']} — {nc['responsable_nombre']} "
                                  f"— {nc['estatus']}{inhab}{vinc_txt}"):
@@ -1769,18 +1770,19 @@ with nav[IDX_GESTION]:
                         st.write(f"**Factura:** {nc['numero_factura']}")
 
                     st.markdown("---")
-                    st.markdown("**🔗 Vínculo con NC raíz**")
+                    st.markdown("**🔗 Jerarquía / vínculo con otra NC**")
                     if nc.get("vinculada_a"):
                         nc_raiz_actual = obtener_nc_por_id(nc["vinculada_a"])
                         if nc_raiz_actual:
-                            st.write(f"Esta NC depende de la NC raíz: **{nc_raiz_actual['nc_externo']}**")
-                            st.write(f"Estado de la NC raíz: **{estado_legible_nc(nc_raiz_actual)}**")
+                            st.write(f"🔻 Esta NC es **más baja** en la jerarquía — "
+                                    f"depende de: **{nc_raiz_actual['nc_externo']}**")
+                            st.write(f"Estado de esa NC: **{estado_legible_nc(nc_raiz_actual)}**")
                             if nc_raiz_actual.get("concluida"):
-                                st.warning("⚠️ La NC raíz de la que depende ya está concluida.")
+                                st.warning("⚠️ La NC de la que depende ya está concluida.")
                             hermanas = [h for h in obtener_nc_hijas(nc["vinculada_a"])
                                        if h["id"] != nc["id"]]
                             if hermanas:
-                                st.caption("Otras NC que también dependen de esa raíz: " +
+                                st.caption("Otras NC en el mismo historial: " +
                                           ", ".join(h["nc_externo"] for h in hermanas))
                             if st.button("🔓 Quitar vínculo", key=f"desvinc_{nc['id']}"):
                                 desvincular_nc(nc["id"])
@@ -1792,10 +1794,10 @@ with nav[IDX_GESTION]:
                     else:
                         hijas_actuales = obtener_nc_hijas(nc["id"])
                         if hijas_actuales:
-                            st.write("Esta NC es la **raíz** de: " +
+                            st.write("🔺 Esta NC es la **más alta** en la jerarquía — historial debajo: " +
                                     ", ".join(h["nc_externo"] for h in hijas_actuales))
                             st.caption("Para cambiar esta jerarquía, primero quita el vínculo "
-                                      "de cada NC hija.")
+                                      "de cada NC del historial.")
                         else:
                             candidatas_vinc = [n for n in todas_completas
                                                if n["id"] != nc["id"]
@@ -1805,7 +1807,7 @@ with nav[IDX_GESTION]:
                                 opciones_v2 = {f"{c['nc_externo']} — {estado_legible_nc(c)} ({c['id'][:8]})": c["id"]
                                               for c in candidatas_vinc}
                                 sel_v2 = st.selectbox(
-                                    "Vincular esta NC a una NC raíz",
+                                    "Vincular esta NC a otra (quedará como más baja / dependiente)",
                                     ["— Sin vínculo —"] + list(opciones_v2.keys()),
                                     key=f"selvinc_{nc['id']}"
                                 )
@@ -1813,7 +1815,7 @@ with nav[IDX_GESTION]:
                                     raiz_elegida_v2 = next((c for c in candidatas_vinc
                                                             if c["id"] == opciones_v2[sel_v2]), None)
                                     if raiz_elegida_v2 and raiz_elegida_v2.get("concluida"):
-                                        st.warning("⚠️ Estado: Concluido — esa NC raíz ya está cerrada.")
+                                        st.warning("⚠️ Estado: Concluido — esa NC ya está cerrada.")
                                     if st.button("🔗 Confirmar vínculo", key=f"btnvinc_{nc['id']}"):
                                         ok_v, err_v = vincular_nc_existente(nc["id"], opciones_v2[sel_v2])
                                         if ok_v:
@@ -1826,23 +1828,24 @@ with nav[IDX_GESTION]:
                                 st.caption("No hay otras NC disponibles para vincular.")
 
                     st.markdown("---")
-                    st.markdown("**🔀 Fusionar con otra NC (si son la misma solicitud duplicada)**")
+                    st.markdown("**🔀 Fusionar con una NC anterior (historial / duplicado)**")
+                    st.caption(
+                        "Úsalo cuando esta NC es continuación de otra que ya se cerró/rechazó, "
+                        "o cuando son 2 registros de la misma solicitud repartidos entre 2 "
+                        "personas. Esta NC (la que estás viendo) se queda como la **más alta** "
+                        "(activa) y sigue dando seguimiento; la que elijas abajo pasa a ser "
+                        "**más baja** (historial) y se inhabilita, pero no se borra."
+                    )
                     candidatas_fusion = [n for n in todas_completas
                                          if n["id"] != nc["id"] and not n.get("inhabilitada")]
                     if candidatas_fusion:
                         opciones_f = {f"{c['nc_externo']} — {estado_legible_nc(c)} — "
                                      f"{c['responsable_nombre']} ({c['id'][:8]})": c["id"]
                                      for c in candidatas_fusion}
-                        sel_f = st.selectbox("Esta NC es duplicada de:",
+                        sel_f = st.selectbox("Esta NC es continuación/duplicada de:",
                                              ["— Ninguna —"] + list(opciones_f.keys()),
                                              key=f"selfusion_{nc['id']}")
                         if sel_f != "— Ninguna —":
-                            st.caption(
-                                f"Al fusionar, **{nc['nc_externo']}** sigue activa y da "
-                                f"seguimiento de aquí en adelante. La otra NC se "
-                                f"inhabilita (no se borra) y sus contenedores/datos se "
-                                f"suman a esta."
-                            )
                             if st.button("🔀 Confirmar fusión", key=f"btnfusion_{nc['id']}"):
                                 ok_f, err_f = fusionar_nc(nc["id"], opciones_f[sel_f])
                                 if ok_f:
@@ -1889,10 +1892,11 @@ with nav[IDX_GESTION]:
         st.markdown("<div class='sec-hdr'>📌 NC Asignadas</div>", unsafe_allow_html=True)
 
         if es_admin:
-            lista_nc = [n for n in _cached_nc_asignaciones() if not n.get("concluida")]
+            lista_nc = [n for n in _cached_nc_asignaciones()
+                       if not n.get("concluida") and not n.get("inhabilitada")]
         else:
             lista_nc = [n for n in obtener_nc_asignaciones(responsable_id=usuario["id"])
-                        if not n.get("concluida")]
+                        if not n.get("concluida") and not n.get("inhabilitada")]
 
         motivos_disp = [m["texto"] for m in _cached_nc_motivos()]
         estatus_disp = [e["texto"] for e in _cached_nc_estatus()]
@@ -1904,9 +1908,8 @@ with nav[IDX_GESTION]:
         for nc in lista_nc:
             vis = nc.get("estado_visual", "nuevo")
             icono = {"nuevo": "🔵", "seguimiento": "🟢", "reasignado": "🟡"}.get(vis, "⚪")
-            inhab = " ⛔" if nc.get("inhabilitada") else ""
 
-            with st.expander(f"{icono} {nc['nc_externo']} — {nc['estatus']}{inhab}",
+            with st.expander(f"{icono} {nc['nc_externo']} — {nc['estatus']}",
                              expanded=False):
                 st.markdown("**Información fija (no editable):**")
                 fi1, fi2, fi3 = st.columns(3)
@@ -1920,6 +1923,36 @@ with nav[IDX_GESTION]:
                 if nc.get("cliente") or nc.get("numero_factura"):
                     st.caption(f"Cliente: {nc.get('cliente','—')}  |  "
                               f"Factura: {nc.get('numero_factura','—')}")
+
+                if es_admin:
+                    with st.popover("🗑️ Eliminar NC"):
+                        st.warning(
+                            "Esta acción es permanente: la NC desaparece de todas "
+                            "las sub-pestañas de Gestión NC (Asignar NC, NC Asignadas, "
+                            "NC Concluidas, NC Creadas) y no se puede deshacer. "
+                            "Si solo quieres dejar de trabajarla, usa mejor "
+                            "'Inhabilitar NC' desde la pestaña Asignar NC."
+                        )
+                        if not st.session_state.get(f"confirmar_elim_{nc['id']}"):
+                            if st.button("Eliminar de forma permanente",
+                                        key=f"pedirelim_{nc['id']}"):
+                                st.session_state[f"confirmar_elim_{nc['id']}"] = True
+                                st.rerun()
+                        else:
+                            st.error(f"¿Seguro que quieres eliminar **{nc['nc_externo']}** "
+                                    f"de forma permanente?")
+                            ce1, ce2 = st.columns(2)
+                            with ce1:
+                                if st.button("Sí, eliminar", key=f"confelim_si_{nc['id']}"):
+                                    eliminar_nc_asignacion(nc["id"])
+                                    del st.session_state[f"confirmar_elim_{nc['id']}"]
+                                    invalidar_cache_nc()
+                                    st.success("NC eliminada")
+                                    st.rerun()
+                            with ce2:
+                                if st.button("No", key=f"confelim_no_{nc['id']}"):
+                                    del st.session_state[f"confirmar_elim_{nc['id']}"]
+                                    st.rerun()
 
                 st.markdown("---")
                 st.markdown("**Información a completar:**")
@@ -2079,7 +2112,12 @@ with nav[IDX_GESTION]:
         if not es_admin:
             concluidas = [n for n in concluidas if n["responsable_id"] == usuario["id"]]
 
-        if not concluidas:
+        inhabilitadas = [n for n in _cached_nc_asignaciones()
+                         if n.get("inhabilitada") and not n.get("concluida")]
+        if not es_admin:
+            inhabilitadas = [n for n in inhabilitadas if n["responsable_id"] == usuario["id"]]
+
+        if not concluidas and not inhabilitadas:
             st.info("No hay NCs concluidas.")
 
         for nc in concluidas:
@@ -2105,6 +2143,21 @@ with nav[IDX_GESTION]:
                         st.success("NC reabierta")
                         invalidar_cache_nc()
                         st.rerun()
+
+        if inhabilitadas:
+            st.markdown("---")
+            st.markdown("**⛔ Inhabilitadas** (duplicados o fusionadas — ya no requieren acción)")
+            for nc in inhabilitadas:
+                with st.expander(f"⛔ {nc['nc_externo']} — {nc['responsable_nombre']}"):
+                    st.write(f"**NC Externo:** {nc['nc_externo']}")
+                    st.write(f"**Responsable:** {nc['responsable_nombre']}")
+                    st.write(f"**Motivo de inhabilitación:** {nc.get('motivo_inhabilitacion') or '—'}")
+                    if nc.get("vinculada_a"):
+                        nc_raiz_i = obtener_nc_por_id(nc["vinculada_a"])
+                        if nc_raiz_i:
+                            st.caption(f"Historial de la NC {nc_raiz_i['nc_externo']} "
+                                      f"(esta quedó como más baja en la jerarquía).")
+                    st.caption("Para reactivarla, ve a Asignar NC y quita la inhabilitación.")
     _si += 1
 
     with sub_nav[_si]:
@@ -2122,11 +2175,11 @@ with nav[IDX_GESTION]:
                 if nc.get("vinculada_a"):
                     nc_raiz_c = obtener_nc_por_id(nc["vinculada_a"])
                     if nc_raiz_c:
-                        vinculo_txt = f"Depende de {nc_raiz_c['nc_externo']}"
+                        vinculo_txt = f"Más baja — depende de {nc_raiz_c['nc_externo']}"
                 else:
                     hijas_c = obtener_nc_hijas(nc["id"])
                     if hijas_c:
-                        vinculo_txt = "Raíz de " + ", ".join(h["nc_externo"] for h in hijas_c)
+                        vinculo_txt = "Más alta — historial: " + ", ".join(h["nc_externo"] for h in hijas_c)
 
                 if nc.get("numero_nc_emitida"):
                     nc_emitida_txt = nc["numero_nc_emitida"]

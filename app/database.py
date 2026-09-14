@@ -777,42 +777,67 @@ def desvincular_nc(nc_id: str):
         return False
 
 
-def fusionar_nc(nc_mantener_id: str, nc_absorbida_id: str):
-    """Fusiona dos NC que resultaron ser la misma solicitud repartida en 2 registros
-    (ej. capturada por 2 personas). La NC 'nc_mantener_id' sigue activa y es la que
-    da seguimiento de aquí en adelante; 'nc_absorbida_id' se inhabilita (no se borra,
-    para no perder rastro) y sus datos/contenedores/hijas se transfieren a la que
-    se conserva. Retorna (True, None) o (False, mensaje_error)."""
+def eliminar_nc_asignacion(nc_id: str):
+    """Elimina permanentemente una NC asignada (desaparece de todas las
+    sub-pestañas de Gestión NC). Si otras NC dependían de ella como raíz,
+    quedan independientes en vez de perderse. También limpia sus
+    notificaciones y su rastro de duplicados revisados."""
     try:
-        if nc_mantener_id == nc_absorbida_id:
+        db = get_client()
+        for hija in obtener_nc_hijas(nc_id):
+            actualizar_nc_asignacion(hija["id"], {"vinculada_a": None})
+        db.table("nc_notificaciones").delete().eq("nc_id", nc_id).execute()
+        db.table("nc_duplicados_revisados").delete().eq("nc_id", nc_id).execute()
+        db.table("nc_asignaciones").delete().eq("id", nc_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def fusionar_nc(nc_mantener_id: str, nc_anterior_id: str):
+    """Fusiona una NC anterior (nc_anterior_id) dentro de la NC vigente
+    (nc_mantener_id). nc_mantener_id queda como la NC MÁS ALTA de la
+    jerarquía (la activa, la que sigue dando seguimiento) y nc_anterior_id
+    como MÁS BAJA (historial — ej. se cerró/rechazó y se volvió a subir).
+    Si nc_anterior_id ya tenía su propio historial debajo, ese historial
+    se reacomoda directo bajo nc_mantener_id (nunca más de 2 niveles).
+    Retorna (True, None) o (False, mensaje_error)."""
+    try:
+        if nc_mantener_id == nc_anterior_id:
             return False, "No se puede fusionar una NC consigo misma."
         mantener = obtener_nc_por_id(nc_mantener_id)
-        absorbida = obtener_nc_por_id(nc_absorbida_id)
-        if not mantener or not absorbida:
+        anterior = obtener_nc_por_id(nc_anterior_id)
+        if not mantener or not anterior:
             return False, "No se encontró alguna de las dos NC."
+        if mantener.get("vinculada_a"):
+            return False, ("Esta NC ya depende de otra en la jerarquía; fusiona "
+                            "desde la NC más alta de esa jerarquía, no desde esta.")
 
         conts_m = {c.strip() for c in (mantener.get("contenedores") or "").split(",") if c.strip()}
-        conts_a = {c.strip() for c in (absorbida.get("contenedores") or "").split(",") if c.strip()}
+        conts_a = {c.strip() for c in (anterior.get("contenedores") or "").split(",") if c.strip()}
         conts_unidos = ", ".join(sorted(conts_m | conts_a))
 
         datos_actualizar = {}
         if conts_unidos:
             datos_actualizar["contenedores"] = conts_unidos
         for campo in ("cliente", "numero_factura", "nc_interno", "motivo"):
-            if not mantener.get(campo) and absorbida.get(campo):
-                datos_actualizar[campo] = absorbida[campo]
-        nota_fusion = f"[Fusionada con la NC {absorbida['nc_externo']}] "
+            if not mantener.get(campo) and anterior.get(campo):
+                datos_actualizar[campo] = anterior[campo]
+        nota_fusion = f"[Historial: continúa lo capturado en la NC {anterior['nc_externo']}] "
         datos_actualizar["comentarios"] = nota_fusion + (mantener.get("comentarios") or "")
         actualizar_nc_asignacion(nc_mantener_id, datos_actualizar)
 
-        # Las NC que dependían de la absorbida ahora dependen de la que se conserva
-        for hija in obtener_nc_hijas(nc_absorbida_id):
+        # Todo lo que ya dependía de la NC anterior pasa a depender directo
+        # de la que se conserva, para mantener la jerarquía a solo 2 niveles
+        # (la más alta arriba, todo el historial abajo, sin anidar cadenas).
+        for hija in obtener_nc_hijas(nc_anterior_id):
             actualizar_nc_asignacion(hija["id"], {"vinculada_a": nc_mantener_id})
 
-        actualizar_nc_asignacion(nc_absorbida_id, {
+        # La NC anterior queda como historial de la que se conserva
+        actualizar_nc_asignacion(nc_anterior_id, {
             "inhabilitada":          True,
-            "motivo_inhabilitacion": f"Fusionada con la NC {mantener['nc_externo']}",
-            "vinculada_a":           None,
+            "motivo_inhabilitacion": f"Historial: reemplazada por la NC {mantener['nc_externo']}",
+            "vinculada_a":           nc_mantener_id,
         })
         return True, None
     except Exception as e:

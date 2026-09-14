@@ -53,6 +53,21 @@ def estado_legible_nc(nc: dict) -> str:
     return nc.get("estatus") or "—"
 
 
+def fecha_hora_mx(iso_str) -> str:
+    """Convierte un timestamp guardado en Supabase a texto legible en hora de
+    México (DD/MM/AAAA HH:MM). Si no hay valor, regresa 'Pendiente'."""
+    if not iso_str:
+        return "Pendiente"
+    try:
+        limpio = str(iso_str).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(limpio)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+        return dt.astimezone(ZONA_MX).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(iso_str)[:16]
+
+
 from app.config import COL_BI, COL_TAB
 # Perfiles ahora vienen de Supabase via database.py
 from app.calendario import get_festivos_oficiales
@@ -1762,6 +1777,9 @@ with nav[IDX_GESTION]:
                     st.write(f"**Responsable actual:** {nc['responsable_nombre']}")
                     st.write(f"**Fecha solicitud:** {nc.get('fecha_solicitud', '—')}")
                     st.write(f"**Estatus:** {nc['estatus']}")
+                    fcr1, fcr2 = st.columns(2)
+                    fcr1.write(f"**Creada:** {fecha_hora_mx(nc.get('fecha_creacion'))}")
+                    fcr2.write(f"**Cerrada:** {fecha_hora_mx(nc.get('fecha_cierre'))}")
                     if nc.get("cliente"):
                         st.write(f"**Cliente:** {nc['cliente']}")
                     if nc.get("numero_factura"):
@@ -1940,12 +1958,14 @@ with nav[IDX_GESTION]:
                              expanded=False):
                 st.markdown("**Información fija (no editable):**")
                 fi1, fi2, fi3 = st.columns(3)
-                fi1.text_input("Fecha que se subió", value=str(nc.get("fecha_creacion",""))[:10],
+                fi1.text_input("Creada", value=fecha_hora_mx(nc.get("fecha_creacion")),
                                disabled=True, key=f"ffija1_{nc['id']}")
                 fi2.text_input("NC Externo", value=nc["nc_externo"], disabled=True,
                                key=f"ffija2_{nc['id']}")
                 fi3.text_input("Responsable", value=nc["responsable_nombre"], disabled=True,
                                key=f"ffija3_{nc['id']}")
+                st.text_input("Cerrada", value=fecha_hora_mx(nc.get("fecha_cierre")),
+                             disabled=True, key=f"ffijacierre_{nc['id']}")
 
                 if nc.get("cliente") or nc.get("numero_factura"):
                     st.caption(f"Cliente: {nc.get('cliente','—')}  |  "
@@ -2136,6 +2156,9 @@ with nav[IDX_GESTION]:
                 st.write(f"**Responsable:** {nc['responsable_nombre']}")
                 st.write(f"**Motivo:** {nc.get('motivo') or '—'}")
                 st.write(f"**Estatus:** {nc['estatus']}")
+                fcc1, fcc2 = st.columns(2)
+                fcc1.write(f"**Creada:** {fecha_hora_mx(nc.get('fecha_creacion'))}")
+                fcc2.write(f"**Cerrada:** {fecha_hora_mx(nc.get('fecha_cierre'))}")
                 if nc.get("comentarios"):
                     st.write(f"**Comentarios:** {nc['comentarios']}")
                 if nc.get("contenedores"):
@@ -2159,6 +2182,7 @@ with nav[IDX_GESTION]:
                     st.write(f"**NC Externo:** {nc['nc_externo']}")
                     st.write(f"**Responsable:** {nc['responsable_nombre']}")
                     st.write(f"**Motivo de inhabilitación:** {nc.get('motivo_inhabilitacion') or '—'}")
+                    st.write(f"**Creada:** {fecha_hora_mx(nc.get('fecha_creacion'))}")
                     if nc.get("vinculada_a"):
                         nc_raiz_i = obtener_nc_por_id(nc["vinculada_a"])
                         if nc_raiz_i:
@@ -2201,6 +2225,8 @@ with nav[IDX_GESTION]:
                     "Contenedores": nc.get("contenedores") or "—",
                     "Estatus":      nc["estatus"],
                     "NC Emitida":   nc_emitida_txt,
+                    "Creada":       fecha_hora_mx(nc.get("fecha_creacion")),
+                    "Cerrada":      fecha_hora_mx(nc.get("fecha_cierre")),
                     "Comentarios":  nc.get("comentarios") or "—",
                     "Responsable":  nc["responsable_nombre"],
                     "Vínculo":      vinculo_txt,

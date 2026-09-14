@@ -44,6 +44,15 @@ def invalidar_cache_nc():
     """Llamar después de crear/editar/eliminar una NC para refrescar la vista al instante."""
     _cached_nc_asignaciones.clear()
 
+
+def estado_legible_nc(nc: dict) -> str:
+    """Texto de estado para mostrar junto a una NC: 'Concluido' si ya se cerró
+    (independientemente del estatus con el que haya quedado), o su estatus normal."""
+    if nc.get("concluida"):
+        return "Concluido"
+    return nc.get("estatus") or "—"
+
+
 from app.config import COL_BI, COL_TAB
 # Perfiles ahora vienen de Supabase via database.py
 from app.calendario import get_festivos_oficiales
@@ -66,11 +75,13 @@ from app.database import (login_usuario, obtener_usuarios, crear_usuario,
                            crear_nc_asignacion, obtener_nc_asignaciones,
                            obtener_nc_por_id, actualizar_nc_asignacion,
                            obtener_nc_hijas, vincular_nc_existente, desvincular_nc,
+                           fusionar_nc,
                            reasignar_nc, inhabilitar_nc, marcar_seguimiento_nc,
                            concluir_nc, reabrir_nc, buscar_nc_asignaciones,
                            actualizar_herencia_analisis,
                            obtener_notificaciones_pendientes,
                            marcar_notificaciones_vistas,
+                           crear_nc_notificacion,
                            verificar_contenedores_en_nc,
                            registrar_duplicado_revisado)
 
@@ -1671,7 +1682,7 @@ with nav[IDX_GESTION]:
                         candidatas_raiz = [n for n in todas_nc
                                            if not n.get("vinculada_a")
                                            and not n.get("inhabilitada")]
-                        opciones_vinc = {f"{nc['nc_externo']} ({nc['id'][:8]})": nc["id"]
+                        opciones_vinc = {f"{nc['nc_externo']} — {estado_legible_nc(nc)} ({nc['id'][:8]})": nc["id"]
                                          for nc in candidatas_raiz}
                         busq_vinc = st.text_input("Buscar NC raíz")
                         filtradas = {k: v for k, v in opciones_vinc.items()
@@ -1679,10 +1690,15 @@ with nav[IDX_GESTION]:
                         if filtradas:
                             sel_vinc = st.selectbox("Selecciona la NC raíz", list(filtradas.keys()))
                             nc_vinc_id = filtradas.get(sel_vinc)
-                            st.caption("La nueva NC quedará como hija de la NC raíz seleccionada.")
+                            nc_raiz_elegida = next((n for n in candidatas_raiz if n["id"] == nc_vinc_id), None)
+                            if nc_raiz_elegida and nc_raiz_elegida.get("concluida"):
+                                st.warning("⚠️ Estado: Concluido — la NC raíz que elegiste ya está cerrada.")
+                            else:
+                                st.caption("La nueva NC quedará como hija de la NC raíz seleccionada.")
                         else:
                             st.caption("No hay NC disponibles para usar como raíz "
                                        "(solo se muestran NC que no dependen ya de otra).")
+
 
                     if st.form_submit_button("Crear NC", type="primary"):
                         if not nc_ext or not resp_sel:
@@ -1758,6 +1774,9 @@ with nav[IDX_GESTION]:
                         nc_raiz_actual = obtener_nc_por_id(nc["vinculada_a"])
                         if nc_raiz_actual:
                             st.write(f"Esta NC depende de la NC raíz: **{nc_raiz_actual['nc_externo']}**")
+                            st.write(f"Estado de la NC raíz: **{estado_legible_nc(nc_raiz_actual)}**")
+                            if nc_raiz_actual.get("concluida"):
+                                st.warning("⚠️ La NC raíz de la que depende ya está concluida.")
                             hermanas = [h for h in obtener_nc_hijas(nc["vinculada_a"])
                                        if h["id"] != nc["id"]]
                             if hermanas:
@@ -1783,7 +1802,7 @@ with nav[IDX_GESTION]:
                                                and not n.get("vinculada_a")
                                                and not n.get("inhabilitada")]
                             if candidatas_vinc:
-                                opciones_v2 = {f"{c['nc_externo']} ({c['id'][:8]})": c["id"]
+                                opciones_v2 = {f"{c['nc_externo']} — {estado_legible_nc(c)} ({c['id'][:8]})": c["id"]
                                               for c in candidatas_vinc}
                                 sel_v2 = st.selectbox(
                                     "Vincular esta NC a una NC raíz",
@@ -1791,6 +1810,10 @@ with nav[IDX_GESTION]:
                                     key=f"selvinc_{nc['id']}"
                                 )
                                 if sel_v2 != "— Sin vínculo —":
+                                    raiz_elegida_v2 = next((c for c in candidatas_vinc
+                                                            if c["id"] == opciones_v2[sel_v2]), None)
+                                    if raiz_elegida_v2 and raiz_elegida_v2.get("concluida"):
+                                        st.warning("⚠️ Estado: Concluido — esa NC raíz ya está cerrada.")
                                     if st.button("🔗 Confirmar vínculo", key=f"btnvinc_{nc['id']}"):
                                         ok_v, err_v = vincular_nc_existente(nc["id"], opciones_v2[sel_v2])
                                         if ok_v:
@@ -1801,6 +1824,35 @@ with nav[IDX_GESTION]:
                                             st.error(err_v or "No se pudo vincular")
                             else:
                                 st.caption("No hay otras NC disponibles para vincular.")
+
+                    st.markdown("---")
+                    st.markdown("**🔀 Fusionar con otra NC (si son la misma solicitud duplicada)**")
+                    candidatas_fusion = [n for n in todas_completas
+                                         if n["id"] != nc["id"] and not n.get("inhabilitada")]
+                    if candidatas_fusion:
+                        opciones_f = {f"{c['nc_externo']} — {estado_legible_nc(c)} — "
+                                     f"{c['responsable_nombre']} ({c['id'][:8]})": c["id"]
+                                     for c in candidatas_fusion}
+                        sel_f = st.selectbox("Esta NC es duplicada de:",
+                                             ["— Ninguna —"] + list(opciones_f.keys()),
+                                             key=f"selfusion_{nc['id']}")
+                        if sel_f != "— Ninguna —":
+                            st.caption(
+                                f"Al fusionar, **{nc['nc_externo']}** sigue activa y da "
+                                f"seguimiento de aquí en adelante. La otra NC se "
+                                f"inhabilita (no se borra) y sus contenedores/datos se "
+                                f"suman a esta."
+                            )
+                            if st.button("🔀 Confirmar fusión", key=f"btnfusion_{nc['id']}"):
+                                ok_f, err_f = fusionar_nc(nc["id"], opciones_f[sel_f])
+                                if ok_f:
+                                    st.success("NC fusionadas correctamente")
+                                    invalidar_cache_nc()
+                                    st.rerun()
+                                else:
+                                    st.error(err_f or "No se pudo fusionar")
+                    else:
+                        st.caption("No hay otras NC disponibles para fusionar.")
 
                     ra1, ra2 = st.columns(2)
                     with ra1:
@@ -1910,33 +1962,74 @@ with nav[IDX_GESTION]:
                                               value=nc.get("comentarios") or "",
                                               key=f"coment_{nc['id']}")
 
+                # "Rechazada" concluye la NC, pero se confirma antes de hacerlo
+                requiere_confirmacion_rechazo = "RECHAZ" in estatus_sel.upper()
+
+                def _datos_guardar_nc(marcar_concluida=False):
+                    datos = {
+                        "nc_interno":   nc_int,
+                        "motivo":       motivo_sel,
+                        "estatus":      estatus_sel,
+                        "contenedores": ", ".join(conts_extraidos),
+                        "comentarios":  comentarios_nc,
+                    }
+                    # Marcar como "en seguimiento" (verde) al guardar,
+                    # solo si sigue en su estado inicial "nuevo"
+                    if nc.get("estado_visual") == "nuevo":
+                        datos["estado_visual"] = "seguimiento"
+                    if nc_emitida:
+                        datos["numero_nc_emitida"] = nc_emitida
+                    if marcar_concluida:
+                        datos["concluida"] = True
+                    return datos
+
                 if st.button("💾 Guardar información", type="primary",
                             key=f"guardar_nc_{nc['id']}"):
                     # Verificar duplicados de contenedores contra otras NC
                     dups = verificar_contenedores_en_nc(conts_extraidos, excluir_nc_id=nc["id"])
                     if dups:
                         st.session_state[f"dups_pendientes_{nc['id']}"] = dups
+                        # Avisar también al responsable de la NC ya existente,
+                        # no solo mostrarle la alerta a quien está capturando ahora
+                        for dup in dups:
+                            if dup.get("responsable_id") and dup["responsable_id"] != usuario["id"]:
+                                crear_nc_notificacion(
+                                    dup["responsable_id"], dup["nc_id"],
+                                    f"Posible duplicidad: el contenedor {dup['contenedor']} "
+                                    f"también se capturó en la NC {nc['nc_externo']} "
+                                    f"(responsable: {usuario['nombre_completo']})."
+                                )
+                        st.rerun()
+                    elif requiere_confirmacion_rechazo:
+                        st.session_state[f"confirmar_concluir_{nc['id']}"] = True
                         st.rerun()
                     else:
-                        datos_guardar = {
-                            "nc_interno":   nc_int,
-                            "motivo":       motivo_sel,
-                            "estatus":      estatus_sel,
-                            "contenedores": ", ".join(conts_extraidos),
-                            "comentarios":  comentarios_nc,
-                        }
-                        # Marcar como "en seguimiento" (verde) al guardar,
-                        # solo si sigue en su estado inicial "nuevo"
-                        if nc.get("estado_visual") == "nuevo":
-                            datos_guardar["estado_visual"] = "seguimiento"
-                        if nc_emitida:
-                            datos_guardar["numero_nc_emitida"] = nc_emitida
-                        if estatus_sel in estatus_concluido_set and nc_emitida:
-                            datos_guardar["concluida"] = True
-                        actualizar_nc_asignacion(nc["id"], datos_guardar)
+                        marcar_conc = estatus_sel in estatus_concluido_set and bool(nc_emitida)
+                        actualizar_nc_asignacion(nc["id"], _datos_guardar_nc(marcar_conc))
                         invalidar_cache_nc()
                         st.success("Información guardada")
                         st.rerun()
+
+                # Confirmación antes de concluir por estatus "Rechazada"
+                if st.session_state.get(f"confirmar_concluir_{nc['id']}"):
+                    st.warning(
+                        f"Estás a punto de concluir la NC **{nc['nc_externo']}** con "
+                        f"estatus **{estatus_sel}**. ¿Deseas continuar?"
+                    )
+                    cf1, cf2 = st.columns(2)
+                    with cf1:
+                        if st.button("Sí, concluir", type="primary",
+                                    key=f"confconc_si_{nc['id']}"):
+                            actualizar_nc_asignacion(nc["id"], _datos_guardar_nc(marcar_concluida=True))
+                            del st.session_state[f"confirmar_concluir_{nc['id']}"]
+                            invalidar_cache_nc()
+                            st.success("NC concluida")
+                            st.rerun()
+                    with cf2:
+                        if st.button("No, seguir editando",
+                                    key=f"confconc_no_{nc['id']}"):
+                            del st.session_state[f"confirmar_concluir_{nc['id']}"]
+                            st.rerun()
 
                 # Mostrar alertas de duplicados pendientes de decisión
                 if st.session_state.get(f"dups_pendientes_{nc['id']}"):
@@ -1971,20 +2064,8 @@ with nav[IDX_GESTION]:
                                 registrar_duplicado_revisado(
                                     nc["id"], dup["contenedor"], usuario["nombre_completo"]
                                 )
-                                datos_guardar = {
-                                    "nc_interno":   nc_int,
-                                    "motivo":       motivo_sel,
-                                    "estatus":      estatus_sel,
-                                    "contenedores": ", ".join(conts_extraidos),
-                                    "comentarios":  comentarios_nc,
-                                }
-                                if nc.get("estado_visual") == "nuevo":
-                                    datos_guardar["estado_visual"] = "seguimiento"
-                                if nc_emitida:
-                                    datos_guardar["numero_nc_emitida"] = nc_emitida
-                                if estatus_sel in estatus_concluido_set and nc_emitida:
-                                    datos_guardar["concluida"] = True
-                                actualizar_nc_asignacion(nc["id"], datos_guardar)
+                                marcar_conc2 = estatus_sel in estatus_concluido_set and bool(nc_emitida)
+                                actualizar_nc_asignacion(nc["id"], _datos_guardar_nc(marcar_conc2))
                                 del st.session_state[f"dups_pendientes_{nc['id']}"]
                                 st.success("🔍 Revisado — información guardada")
                                 invalidar_cache_nc()
@@ -2046,11 +2127,20 @@ with nav[IDX_GESTION]:
                     hijas_c = obtener_nc_hijas(nc["id"])
                     if hijas_c:
                         vinculo_txt = "Raíz de " + ", ".join(h["nc_externo"] for h in hijas_c)
+
+                if nc.get("numero_nc_emitida"):
+                    nc_emitida_txt = nc["numero_nc_emitida"]
+                elif "RECHAZ" in (nc.get("estatus") or "").upper():
+                    nc_emitida_txt = "Rechazada"
+                else:
+                    nc_emitida_txt = "Pendiente"
+
                 tabla_creadas.append({
                     "NC Interno":   nc.get("nc_interno") or "—",
                     "NC Externo":   nc["nc_externo"],
                     "Contenedores": nc.get("contenedores") or "—",
                     "Estatus":      nc["estatus"],
+                    "NC Emitida":   nc_emitida_txt,
                     "Comentarios":  nc.get("comentarios") or "—",
                     "Responsable":  nc["responsable_nombre"],
                     "Vínculo":      vinculo_txt,

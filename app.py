@@ -1886,6 +1886,35 @@ with nav[IDX_GESTION]:
                                         st.rerun()
                                     else:
                                         st.warning("Escribe un motivo")
+
+                    with st.popover("🗑️ Eliminar NC"):
+                        st.warning(
+                            "Esta acción es permanente: la NC desaparece de todas "
+                            "las sub-pestañas de Gestión NC (Asignar NC, NC Asignadas, "
+                            "NC Concluidas, NC Creadas) y no se puede deshacer. "
+                            "Si solo quieres dejar de trabajarla, usa mejor "
+                            "'Inhabilitar NC'."
+                        )
+                        if not st.session_state.get(f"confirmar_elim_{nc['id']}"):
+                            if st.button("Eliminar de forma permanente",
+                                        key=f"pedirelim_{nc['id']}"):
+                                st.session_state[f"confirmar_elim_{nc['id']}"] = True
+                                st.rerun()
+                        else:
+                            st.error(f"¿Seguro que quieres eliminar **{nc['nc_externo']}** "
+                                    f"de forma permanente?")
+                            ce1, ce2 = st.columns(2)
+                            with ce1:
+                                if st.button("Sí, eliminar", key=f"confelim_si_{nc['id']}"):
+                                    eliminar_nc_asignacion(nc["id"])
+                                    del st.session_state[f"confirmar_elim_{nc['id']}"]
+                                    invalidar_cache_nc()
+                                    st.success("NC eliminada")
+                                    st.rerun()
+                            with ce2:
+                                if st.button("No", key=f"confelim_no_{nc['id']}"):
+                                    del st.session_state[f"confirmar_elim_{nc['id']}"]
+                                    st.rerun()
         _si += 1
 
     with sub_nav[_si]:
@@ -1923,36 +1952,6 @@ with nav[IDX_GESTION]:
                 if nc.get("cliente") or nc.get("numero_factura"):
                     st.caption(f"Cliente: {nc.get('cliente','—')}  |  "
                               f"Factura: {nc.get('numero_factura','—')}")
-
-                if es_admin:
-                    with st.popover("🗑️ Eliminar NC"):
-                        st.warning(
-                            "Esta acción es permanente: la NC desaparece de todas "
-                            "las sub-pestañas de Gestión NC (Asignar NC, NC Asignadas, "
-                            "NC Concluidas, NC Creadas) y no se puede deshacer. "
-                            "Si solo quieres dejar de trabajarla, usa mejor "
-                            "'Inhabilitar NC' desde la pestaña Asignar NC."
-                        )
-                        if not st.session_state.get(f"confirmar_elim_{nc['id']}"):
-                            if st.button("Eliminar de forma permanente",
-                                        key=f"pedirelim_{nc['id']}"):
-                                st.session_state[f"confirmar_elim_{nc['id']}"] = True
-                                st.rerun()
-                        else:
-                            st.error(f"¿Seguro que quieres eliminar **{nc['nc_externo']}** "
-                                    f"de forma permanente?")
-                            ce1, ce2 = st.columns(2)
-                            with ce1:
-                                if st.button("Sí, eliminar", key=f"confelim_si_{nc['id']}"):
-                                    eliminar_nc_asignacion(nc["id"])
-                                    del st.session_state[f"confirmar_elim_{nc['id']}"]
-                                    invalidar_cache_nc()
-                                    st.success("NC eliminada")
-                                    st.rerun()
-                            with ce2:
-                                if st.button("No", key=f"confelim_no_{nc['id']}"):
-                                    del st.session_state[f"confirmar_elim_{nc['id']}"]
-                                    st.rerun()
 
                 st.markdown("---")
                 st.markdown("**Información a completar:**")

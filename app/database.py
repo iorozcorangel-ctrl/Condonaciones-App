@@ -679,6 +679,8 @@ def crear_nc_asignacion(nc_externo: str, responsable_id: str, responsable_nombre
     """Crea una nueva NC asignada. Retorna (True, id) o (False, error)."""
     try:
         db = get_client()
+        if vinculada_a:
+            vinculada_a = _resolver_raiz_nc(vinculada_a)
         res = db.table("nc_asignaciones").insert({
             "nc_externo":          nc_externo,
             "responsable_id":      responsable_id,
@@ -727,6 +729,52 @@ def obtener_nc_por_id(nc_id: str):
         return res.data[0] if res.data else None
     except Exception:
         return None
+
+
+def obtener_nc_hijas(nc_id: str):
+    """Obtiene todas las NC que tienen a nc_id como su NC raíz (vinculada_a)."""
+    try:
+        db = get_client()
+        res = db.table("nc_asignaciones").select("*").eq("vinculada_a", nc_id).execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def _resolver_raiz_nc(nc_id: str):
+    """Si nc_id ya depende de otra NC (es hija), regresa el id de su raíz real.
+    Evita cadenas de más de 2 niveles: siempre raíz -> hijas, nunca raíz -> hija -> nieta."""
+    nc = obtener_nc_por_id(nc_id)
+    if nc and nc.get("vinculada_a"):
+        return nc["vinculada_a"]
+    return nc_id
+
+
+def vincular_nc_existente(nc_id: str, nc_raiz_id: str):
+    """Vincula una NC ya existente a otra NC como su raíz.
+    Retorna (True, None) o (False, mensaje_error)."""
+    try:
+        if nc_id == nc_raiz_id:
+            return False, "Una NC no puede vincularse a sí misma."
+        raiz_real = _resolver_raiz_nc(nc_raiz_id)
+        if raiz_real == nc_id:
+            return False, "Esa NC ya depende de esta misma NC."
+        hijas_propias = obtener_nc_hijas(nc_id)
+        if hijas_propias:
+            return False, ("Esta NC ya es raíz de otras NC. Quita esos vínculos primero "
+                            "para poder convertirla en hija de otra NC.")
+        ok = actualizar_nc_asignacion(nc_id, {"vinculada_a": raiz_real})
+        return (True, None) if ok else (False, "No se pudo guardar el vínculo.")
+    except Exception as e:
+        return False, str(e)
+
+
+def desvincular_nc(nc_id: str):
+    """Quita el vínculo de una NC con su NC raíz (la vuelve independiente)."""
+    try:
+        return actualizar_nc_asignacion(nc_id, {"vinculada_a": None})
+    except Exception:
+        return False
 
 
 def actualizar_nc_asignacion(nc_id: str, datos: dict):

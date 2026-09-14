@@ -1716,19 +1716,19 @@ with nav[IDX_GESTION]:
                                     f"estatus: {ya_existe['estatus']}). Usa esa NC existente "
                                     f"en la lista de abajo en lugar de crear una duplicada."
                                 )
-                                st.stop()
-                            resp_obj = next((u for u in usuarios_lista
-                                              if u["nombre_completo"] == resp_sel), None)
-                            ok, res = crear_nc_asignacion(
-                                nc_ext, resp_obj["id"], resp_obj["nombre_completo"],
-                                fecha_sol_nc.isoformat(), usuario["id"], nc_vinc_id
-                            )
-                            if ok:
-                                st.success(f"NC {nc_ext} creada y asignada a {resp_sel}")
-                                invalidar_cache_nc()
-                                st.rerun()
                             else:
-                                st.error(f"Error: {res}")
+                                resp_obj = next((u for u in usuarios_lista
+                                                  if u["nombre_completo"] == resp_sel), None)
+                                ok, res = crear_nc_asignacion(
+                                    nc_ext, resp_obj["id"], resp_obj["nombre_completo"],
+                                    fecha_sol_nc.isoformat(), usuario["id"], nc_vinc_id
+                                )
+                                if ok:
+                                    st.success(f"NC {nc_ext} creada y asignada a {resp_sel}")
+                                    invalidar_cache_nc()
+                                    st.rerun()
+                                else:
+                                    st.error(f"Error: {res}")
 
             st.markdown("### Todas las NCs asignadas")
             busq_asig = st.text_input("🔍 Buscar por NC, contenedor o factura", key="busq_asignar")

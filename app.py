@@ -72,7 +72,8 @@ from app.config import COL_BI, COL_TAB
 # Perfiles ahora vienen de Supabase via database.py
 from app.calendario import get_festivos_oficiales
 from app.validaciones import (validar_archivos, aplicar_regla1, aplicar_regla2,
-                               calcular_desfases, calcular_montos)
+                               calcular_desfases, calcular_montos,
+                               normalizar_contenedor, to_date)
 from app.reporte import generar_reporte
 from app.database import (login_usuario, obtener_usuarios, crear_usuario,
                            cambiar_password, toggle_usuario, eliminar_usuario,
@@ -157,6 +158,7 @@ def init():
         "previo_manual_activo": False,
         "contadores_previo": {},
         "paso_previo":       "inicio",
+        "horario_previo":    {},
     }
     for k, v in defs.items():
         if k not in st.session_state:
@@ -527,6 +529,83 @@ with nav[0]:
                 except Exception as e:
                     st.error(str(e))
 
+        # ── Ajuste de horario de previo (opcional) ─────────────
+        # El archivo BI no trae la hora en que se programó el previo, así
+        # que se pide de forma opcional por contenedor, solo cuando NO se
+        # está usando Condonación Manual Directa (ahí las reglas 3/4/5 no
+        # se calculan).
+        if not cond_manual_check and st.session_state["df_bi"] is not None:
+            df_bi_raw    = st.session_state["df_bi"]
+            col_cont_raw = COL_BI["contenedor"]
+            col_prev_raw = COL_BI["fecha_previo"]
+
+            if col_cont_raw in df_bi_raw.columns and col_prev_raw in df_bi_raw.columns:
+                conts_con_previo = []
+                _vistos = set()
+                for _, _r in df_bi_raw.iterrows():
+                    _cont_norm = normalizar_contenedor(_r.get(col_cont_raw))
+                    if not _cont_norm or _cont_norm in _vistos:
+                        continue
+                    if to_date(_r.get(col_prev_raw)):
+                        conts_con_previo.append(_cont_norm)
+                        _vistos.add(_cont_norm)
+
+                if conts_con_previo:
+                    st.markdown("<div class='sec-hdr'>🕐 Ajuste de horario de previo (opcional)</div>",
+                                unsafe_allow_html=True)
+                    st.caption(
+                        "El archivo BI no trae la hora en que se programó el previo. "
+                        "Si quieres que se considere en el cálculo de la Regla 3, "
+                        "actívalo por contenedor e indica si se programó dentro o "
+                        "después de la ventana de asignación. Si no lo activas para "
+                        "un contenedor, la regla funciona como siempre."
+                    )
+                    horario_previo_prev = dict(st.session_state.get("horario_previo", {}))
+                    horario_previo_nuevo = {}
+                    with st.expander(
+                        f"Configurar horario de previo ({len(conts_con_previo)} contenedor(es))",
+                        expanded=False
+                    ):
+                        opciones_ventana = [
+                            "Se programó durante la ventana de asignación",
+                            "Se programó después de la ventana de asignación",
+                        ]
+                        for _cont in conts_con_previo:
+                            _prev = horario_previo_prev.get(_cont, {})
+                            hc1, hc2, hc3 = st.columns([2, 1, 2])
+                            with hc1:
+                                st.markdown(f"**{_cont}**")
+                                _contar = st.checkbox(
+                                    "Contabilizar hora de programación",
+                                    value=_prev.get("contar", False),
+                                    disabled=bloqueado,
+                                    key=f"hp_contar_{_cont}"
+                                )
+                            if _contar:
+                                with hc2:
+                                    _profepa = st.checkbox(
+                                        "PROFEPA",
+                                        value=_prev.get("profepa", False),
+                                        disabled=bloqueado,
+                                        key=f"hp_profepa_{_cont}"
+                                    )
+                                with hc3:
+                                    _idx_def = 1 if _prev.get("fuera_ventana") else 0
+                                    _sel = st.selectbox(
+                                        "Momento de programación",
+                                        opciones_ventana,
+                                        index=_idx_def,
+                                        disabled=bloqueado,
+                                        key=f"hp_ventana_{_cont}"
+                                    )
+                                horario_previo_nuevo[_cont] = {
+                                    "contar":       True,
+                                    "profepa":      _profepa,
+                                    "fuera_ventana": _sel == opciones_ventana[1],
+                                }
+                            st.markdown("<hr style='margin:4px 0;'>", unsafe_allow_html=True)
+                    st.session_state["horario_previo"] = horario_previo_nuevo
+
         # ── Botones principales ───────────────────────────────
         st.markdown("---")
         ambos = (st.session_state["df_tab"] is not None and
@@ -548,6 +627,7 @@ with nav[0]:
                 st.session_state["alertas"]            = []
                 st.session_state["paso"]               = "inicio"
                 st.session_state["reporte_bytes"]      = None
+                st.session_state["horario_previo"]     = {}
                 st.session_state["uploader_key"] += 1
                 st.rerun()
 
@@ -671,7 +751,8 @@ with nav[0]:
                         }
                 else:
                     desfases = calcular_desfases(
-                        df_bv, st.session_state["dias_especiales"], perfil
+                        df_bv, st.session_state["dias_especiales"], perfil,
+                        horario_previo=st.session_state.get("horario_previo", {})
                     )
                     for cont in desfases:
                         desfases[cont]["es_manual"]    = False
@@ -739,6 +820,17 @@ with nav[0]:
                 alertas.append(("warning",
                     f"**Reprogramaciones:** Más de 1 programación en: "
                     f"{', '.join(reprog)}"))
+
+            # Fecha de cancelación de previo detectada
+            cancelados = []
+            if COL_BI["fecha_cancel"] in df_bv.columns:
+                for _, row in df_bv.iterrows():
+                    if to_date(row.get(COL_BI["fecha_cancel"])):
+                        cancelados.append(row[COL_BI["contenedor"]])
+            if cancelados:
+                alertas.append(("warning",
+                    f"⚠️ Se detectó fecha de cancelación de previo en: "
+                    f"{', '.join(cancelados)}. Favor de validar información."))
 
             st.session_state["df_tab_v"]        = df_tv
             st.session_state["df_bi_v"]         = df_bv
@@ -2220,13 +2312,13 @@ with nav[IDX_GESTION]:
                     nc_emitida_txt = "Pendiente"
 
                 tabla_creadas.append({
-                    "NC Interno":   nc.get("nc_interno") or "—",
                     "NC Externo":   nc["nc_externo"],
+                    "Creada":       fecha_hora_mx(nc.get("fecha_creacion")),
+                    "Cerrada":      fecha_hora_mx(nc.get("fecha_cierre")),
+                    "NC Interno":   nc.get("nc_interno") or "—",
                     "Contenedores": nc.get("contenedores") or "—",
                     "Estatus":      nc["estatus"],
                     "NC Emitida":   nc_emitida_txt,
-                    "Creada":       fecha_hora_mx(nc.get("fecha_creacion")),
-                    "Cerrada":      fecha_hora_mx(nc.get("fecha_cierre")),
                     "Comentarios":  nc.get("comentarios") or "—",
                     "Responsable":  nc["responsable_nombre"],
                     "Vínculo":      vinculo_txt,
@@ -2234,6 +2326,8 @@ with nav[IDX_GESTION]:
             st.dataframe(
                 pd.DataFrame(tabla_creadas), width='stretch', hide_index=True,
                 column_config={
+                    "Creada":       st.column_config.TextColumn(width="medium"),
+                    "Cerrada":      st.column_config.TextColumn(width="medium"),
                     "Comentarios":  st.column_config.TextColumn(width="large"),
                     "Contenedores": st.column_config.TextColumn(width="large"),
                 }

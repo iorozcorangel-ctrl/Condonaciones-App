@@ -9,7 +9,7 @@ import pandas as pd
 from datetime import date, datetime as dt_datetime, timedelta
 from app.config import COL_BI, COL_TAB
 from app.calendario import (calcular_desfase_regla3, calcular_desfase_regla4,
-                             calcular_desfase_regla5)
+                             calcular_desfase_regla5, resolver_inicio_previo)
 
 
 def normalizar_contenedor(valor):
@@ -281,11 +281,12 @@ def aplicar_regla2(df_bi, perfil):
     return no_cumplen
 
 
-def calcular_desfases(df_bi, dias_especiales, perfil):
+def calcular_desfases(df_bi, dias_especiales, perfil, horario_previo=None):
     resultados = {}
     dias_previo    = perfil.get("dias_previo",    3)
     dias_ferromex  = perfil.get("dias_ferromex",  3)
     dias_carretero = perfil.get("dias_carretero", 2)
+    horario_previo = horario_previo or {}
 
     for _, row in df_bi.iterrows():
         cont = row[COL_BI["contenedor"]]
@@ -297,19 +298,32 @@ def calcular_desfases(df_bi, dias_especiales, perfil):
 
         if not fecha_previo:
             desfase_previo = 0
-        elif fecha_cancel:
-            # El AA canceló el previo y no esperó su posicionamiento: el
-            # desfase se calcula contra la fecha de cancelación en vez de
-            # la de posicionamiento, aunque esta última también tenga valor.
-            desfase_previo, _ = calcular_desfase_regla3(
-                fecha_previo, fecha_cancel, dias_especiales, dias_previo
-            )
-        elif not fecha_posicion:
-            desfase_previo = 0
         else:
-            desfase_previo, _ = calcular_desfase_regla3(
-                fecha_previo, fecha_posicion, dias_especiales, dias_previo
-            )
+            # Si el usuario indicó manualmente la hora en que se programó
+            # el previo, se ajusta la fecha desde la que arranca el conteo
+            # (el archivo BI no trae esa hora, así que es opcional).
+            fecha_inicio_previo = fecha_previo
+            ajuste = horario_previo.get(normalizar_contenedor(cont))
+            if ajuste and ajuste.get("contar"):
+                fecha_inicio_previo = resolver_inicio_previo(
+                    fecha_previo,
+                    fuera_de_ventana=ajuste.get("fuera_ventana", False),
+                    es_profepa=ajuste.get("profepa", False),
+                )
+
+            if fecha_cancel:
+                # El AA canceló el previo y no esperó su posicionamiento: el
+                # desfase se calcula contra la fecha de cancelación en vez de
+                # la de posicionamiento, aunque esta última también tenga valor.
+                desfase_previo, _ = calcular_desfase_regla3(
+                    fecha_inicio_previo, fecha_cancel, dias_especiales, dias_previo
+                )
+            elif not fecha_posicion:
+                desfase_previo = 0
+            else:
+                desfase_previo, _ = calcular_desfase_regla3(
+                    fecha_inicio_previo, fecha_posicion, dias_especiales, dias_previo
+                )
 
         # Regla 4
         fecha_ferromex = to_date(row.get(COL_BI["fecha_ferromex"]))

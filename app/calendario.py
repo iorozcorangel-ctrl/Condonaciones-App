@@ -99,6 +99,37 @@ def calcular_dias_habiles_hacia_adelante(fecha_inicio, n_dias, dias_especiales,
     return fecha_actual
 
 
+def resolver_inicio_previo(fecha_previo, fuera_de_ventana, es_profepa=False):
+    """
+    Ajusta la fecha desde la que arranca el conteo de la Regla 3 según la hora
+    en que se programó el previo (ventana de asignación), solo cuando el
+    usuario decide contabilizarla manualmente (el archivo BI no trae hora).
+
+    Ventanas de asignación:
+      - Previo normal: Lunes a Viernes hasta las 16:59, Sábado hasta las 12:00.
+        Domingo no tiene ventana.
+      - Previo PROFEPA: Lunes a Viernes hasta las 12:59. Sábado y Domingo no
+        tienen ventana (se saltan ambos).
+
+    Si se programó DENTRO de la ventana, el conteo arranca ese mismo día
+    (igual que siempre, sin este ajuste). Si se programó FUERA de la ventana,
+    o el día en sí no tiene ventana (domingo siempre; sábado también si es
+    PROFEPA), el conteo arranca en el siguiente día que sí tiene ventana.
+    """
+    dias_sin_ventana = (5, 6) if es_profepa else (6,)  # 5=sábado, 6=domingo
+
+    if fecha_previo.weekday() in dias_sin_ventana:
+        fuera_de_ventana = True
+
+    if not fuera_de_ventana:
+        return fecha_previo
+
+    efectiva = fecha_previo + timedelta(days=1)
+    while efectiva.weekday() in dias_sin_ventana:
+        efectiva += timedelta(days=1)
+    return efectiva
+
+
 def calcular_desfase_regla3(fecha_solicitud, fecha_posicion, dias_especiales,
                               dias_plazo=3):
     """

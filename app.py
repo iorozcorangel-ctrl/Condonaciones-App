@@ -1601,6 +1601,7 @@ with nav[tab_reglas_idx]:
         📌 **Datos utilizados:**
         - `FechaSolitudPrevio` → Inicio del conteo
         - `FechaPosicionamiento` → Fecha real de posicionamiento
+        - `FechaCancelacion` → Si el Agente Aduanal canceló el previo (ver abajo)
 
         📋 **Días que NO cuentan dentro del plazo:**
         - Domingos siempre
@@ -1608,6 +1609,32 @@ with nav[tab_reglas_idx]:
         - Días marcados manualmente en el calendario
 
         ⚠️ **Si el campo está vacío**, el servicio no fue solicitado. Se registra 0 días de desfase.
+
+        🚫 **Cancelación de previo (`FechaCancelacion`):**
+        Si el Agente Aduanal cancela el servicio de previo y decide no esperar su
+        posicionamiento, el sistema lo detecta automáticamente y calcula el desfase
+        usando `FechaSolitudPrevio` + `FechaCancelacion` en lugar de
+        `FechaPosicionamiento`, de forma individual por cada contenedor. Al iniciar
+        el análisis se muestra una alerta para que esta información se valide.
+
+        🕐 **Ajuste de horario de previo (opcional):**
+        El archivo BI no trae la hora en que se programó el previo. En la pantalla
+        de Análisis, justo después de subir el Archivo BI, puedes activarlo
+        manualmente por contenedor e indicar si se programó dentro o después de la
+        ventana de asignación:
+
+        - **Previo normal:** Lunes a Viernes hasta las 16:59, Sábado hasta las 12:00.
+          El domingo no tiene ventana.
+        - **Previo PROFEPA** *(marcando la casilla correspondiente)*: Lunes a Viernes
+          hasta las 12:59. Sábado y domingo no tienen ventana.
+
+        Si se programó **dentro** de la ventana, el conteo arranca ese mismo día
+        (igual que siempre). Si se programó **después** de la ventana, o cae en un
+        día sin ventana, el conteo arranca el siguiente día que sí tiene ventana.
+
+        Si para un contenedor **no se activa** este ajuste, la Regla 3 funciona de
+        manera normal, tal como se ha manejado siempre.
+
         💡 **El número de días puede modificarse en perfiles personalizados.**
         """)
 

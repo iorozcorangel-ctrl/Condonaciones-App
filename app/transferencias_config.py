@@ -84,6 +84,13 @@ CATEGORIA_IMPORTACION  = "IMPORTACION"
 
 
 # ── Archivo Sistema N4 (viene de sistema, poca variabilidad) ─────
+# El Archivo Sistema N4 trae 4 filas de encabezado del reporte (título,
+# filtros, etc.) antes de los nombres de columna reales: los campos
+# (Unit Nbr, Line Op, ...) están en la fila 5 del Excel y los datos de
+# contenedores arrancan en la fila 6. pandas.read_excel usa índice base
+# 0 para el parámetro header, así que la fila 5 (humana) es header=4.
+N4_FILA_ENCABEZADO = 4  # fila 5 del Excel
+
 COL_N4_ALIAS = {
     "ob_dclrd_mode": ["O/B Dclrd Mode", "OB Dclrd Mode", "O/B Declared Mode"],
     "unit_nbr":      ["Unit Nbr", "Unit Number", "UnitNbr"],

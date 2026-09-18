@@ -1034,3 +1034,218 @@ def registrar_duplicado_revisado(nc_id: str, contenedor: str, revisado_por: str)
         return True
     except Exception:
         return False
+
+
+# ════════════════════════════════════════════════════════════════
+#   MÓDULO "TRANSFERENCIAS"
+# ════════════════════════════════════════════════════════════════
+
+# ── Catálogo de Recintos (código fijo + nombres/alias) ───────────
+
+def obtener_transferencias_recintos(solo_aprobados=False):
+    """Catálogo completo de Recintos. Un nombre pendiente de aprobar
+    (aprobado=False) se sigue usando para resolver códigos — solo_aprobados
+    se usa para la vista de solo-lectura de códigos ya oficiales."""
+    try:
+        db = get_client()
+        q = db.table("transferencias_recintos").select("*").order("codigo")
+        if solo_aprobados:
+            q = q.eq("aprobado", True)
+        res = q.execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def proponer_transferencias_recinto(codigo: int, nombre: str, usuario_id: str, usuario_nombre: str):
+    """Cualquier usuario puede proponer un nombre nuevo asociado a un
+    código YA EXISTENTE. Se guarda con aprobado=False pero se usa de
+    inmediato para procesar la fila que lo originó."""
+    try:
+        db = get_client()
+        res = db.table("transferencias_recintos").insert({
+            "codigo": codigo,
+            "nombre": nombre,
+            "es_original": False,
+            "aprobado": False,
+            "propuesto_por": usuario_id,
+            "propuesto_por_nombre": usuario_nombre,
+        }).execute()
+        if res.data:
+            return True, res.data[0]["id"]
+        return False, None
+    except Exception as e:
+        return False, str(e)
+
+
+def aprobar_transferencias_recinto(recinto_id: str, aprobado_por: str):
+    try:
+        db = get_client()
+        db.table("transferencias_recintos").update({
+            "aprobado": True,
+            "aprobado_por": aprobado_por,
+            "fecha_aprobacion": datetime.now().isoformat(),
+        }).eq("id", recinto_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+def rechazar_transferencias_recinto(recinto_id: str):
+    """Elimina una propuesta de nombre de recinto que el Admin decide no
+    aprobar (no borra el código, solo el nombre propuesto)."""
+    try:
+        db = get_client()
+        db.table("transferencias_recintos").delete().eq("id", recinto_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+# ── Catálogo de Navieras (código + nombre, alta directa por Admin) ──
+
+def obtener_transferencias_navieras():
+    try:
+        db = get_client()
+        res = db.table("transferencias_navieras").select("*").order("codigo").execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def crear_transferencias_naviera(codigo: int, nombre: str):
+    try:
+        db = get_client()
+        db.table("transferencias_navieras").insert({
+            "codigo": codigo,
+            "nombre": nombre,
+        }).execute()
+        return True
+    except Exception:
+        return False
+
+
+def eliminar_transferencias_naviera(naviera_id: str):
+    try:
+        db = get_client()
+        db.table("transferencias_navieras").delete().eq("id", naviera_id).execute()
+        return True
+    except Exception:
+        return False
+
+
+# ── Notificaciones (recinto propuesto pendiente de aprobar) ─────
+
+def crear_transferencias_notificacion(usuario_id: str, recinto_id: str, mensaje: str):
+    try:
+        db = get_client()
+        db.table("transferencias_notificaciones").insert({
+            "usuario_id": usuario_id,
+            "recinto_id": recinto_id,
+            "mensaje": mensaje,
+        }).execute()
+        return True
+    except Exception:
+        return False
+
+
+def obtener_transferencias_notificaciones_pendientes(usuario_id: str):
+    try:
+        db = get_client()
+        res = db.table("transferencias_notificaciones").select("*").eq(
+            "usuario_id", usuario_id
+        ).eq("vista", False).order("fecha_creacion", desc=True).execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def marcar_transferencias_notificaciones_vistas(usuario_id: str):
+    try:
+        db = get_client()
+        db.table("transferencias_notificaciones").update({"vista": True}).eq(
+            "usuario_id", usuario_id
+        ).eq("vista", False).execute()
+        return True
+    except Exception:
+        return False
+
+
+# ── Bitácora de casos (folio + responsable informativo, SIN estados) ──
+
+def registrar_transferencia(folio: str, responsable: str, usuario_id: str,
+                             usuario_nombre: str, filas: list):
+    """
+    Registra un caso de Transferencias ya generado. filas: lista de dicts
+    con las llaves contenedor, id_solicitante, linea_op_texto,
+    type_arch_iso, recinto_origen_codigo, recinto_destino_codigo.
+    """
+    try:
+        db = get_client()
+        res = db.table("transferencias_casos").insert({
+            "folio":            folio,
+            "responsable":      responsable,
+            "usuario_id":       usuario_id,
+            "usuario_nombre":   usuario_nombre,
+            "total_contenedores": len(filas),
+        }).execute()
+
+        if not res.data:
+            return False, "Error al registrar el caso"
+
+        caso_id = res.data[0]["id"]
+
+        detalles = []
+        for f in filas:
+            detalles.append({
+                "caso_id":               caso_id,
+                "contenedor":            f.get("contenedor"),
+                "id_solicitante":        f.get("id_solicitante"),
+                "linea_op":              f.get("linea_op_texto"),
+                "type_arch_iso":         f.get("type_arch_iso"),
+                "recinto_origen_codigo": f.get("recinto_origen_codigo"),
+                "recinto_destino_codigo":f.get("recinto_destino_codigo"),
+            })
+        if detalles:
+            db.table("transferencias_detalle").insert(detalles).execute()
+
+        return True, caso_id
+    except Exception as e:
+        return False, str(e)
+
+
+def obtener_transferencias_casos(limite: int = 2000):
+    try:
+        db = get_client()
+        res = db.table("transferencias_casos").select(
+            "id, folio, responsable, usuario_nombre, fecha_creacion, total_contenedores"
+        ).order("fecha_creacion", desc=True).limit(limite).execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def obtener_transferencias_detalle(caso_id: str):
+    try:
+        db = get_client()
+        res = db.table("transferencias_detalle").select(
+            "contenedor, id_solicitante, linea_op, type_arch_iso, "
+            "recinto_origen_codigo, recinto_destino_codigo"
+        ).eq("caso_id", caso_id).execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def folio_transferencia_existe(folio: str):
+    """Verifica si un folio ya fue usado (comparación normalizada)."""
+    try:
+        db = get_client()
+        res = db.table("transferencias_casos").select("id, folio").execute()
+        folio_norm = str(folio).strip().upper()
+        for c in (res.data or []):
+            if str(c.get("folio", "")).strip().upper() == folio_norm:
+                return True
+        return False
+    except Exception:
+        return False

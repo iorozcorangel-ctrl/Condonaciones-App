@@ -130,7 +130,8 @@ from app.database import (login_usuario, obtener_usuarios, crear_usuario,
                            obtener_transferencias_detalle, folio_transferencia_existe)
 from app.transferencias import procesar_transferencias
 from app.transferencias_reporte import generar_documento_transferencias
-from app.transferencias_config import normalizar_texto as normalizar_texto_transferencias
+from app.transferencias_config import (normalizar_texto as normalizar_texto_transferencias,
+                                        N4_FILA_ENCABEZADO)
 
 st.set_page_config(
     page_title="Sistema de Condonaciones",
@@ -2456,7 +2457,10 @@ with nav[IDX_TRANSFEREN]:
                                      key=f"trans_n4_{ukn}")
             if f_n4:
                 try:
-                    st.session_state["trans_df_n4"] = pd.read_excel(f_n4)
+                    # El Archivo Sistema N4 trae 4 filas de encabezado del
+                    # reporte antes de los nombres de columna reales (fila 5).
+                    st.session_state["trans_df_n4"] = pd.read_excel(
+                        f_n4, header=N4_FILA_ENCABEZADO)
                     st.success(f"✔ {f_n4.name}")
                 except Exception as e:
                     st.error(str(e))

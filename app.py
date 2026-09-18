@@ -39,10 +39,29 @@ def _cached_nc_motivos():
 def _cached_nc_estatus():
     return obtener_nc_estatus()
 
+@st.cache_data(ttl=15, show_spinner=False)
+def _cached_transferencias_recintos():
+    return obtener_transferencias_recintos()
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_transferencias_navieras():
+    return obtener_transferencias_navieras()
+
+@st.cache_data(ttl=8, show_spinner=False)
+def _cached_transferencias_casos():
+    return obtener_transferencias_casos()
+
 
 def invalidar_cache_nc():
     """Llamar después de crear/editar/eliminar una NC para refrescar la vista al instante."""
     _cached_nc_asignaciones.clear()
+
+
+def invalidar_cache_transferencias():
+    """Llamar tras crear/aprobar/rechazar un recinto, una naviera o un caso."""
+    _cached_transferencias_recintos.clear()
+    _cached_transferencias_navieras.clear()
+    _cached_transferencias_casos.clear()
 
 
 def estado_legible_nc(nc: dict) -> str:
@@ -99,7 +118,19 @@ from app.database import (login_usuario, obtener_usuarios, crear_usuario,
                            marcar_notificaciones_vistas,
                            crear_nc_notificacion,
                            verificar_contenedores_en_nc,
-                           registrar_duplicado_revisado)
+                           registrar_duplicado_revisado,
+                           obtener_transferencias_recintos, proponer_transferencias_recinto,
+                           aprobar_transferencias_recinto, rechazar_transferencias_recinto,
+                           obtener_transferencias_navieras, crear_transferencias_naviera,
+                           eliminar_transferencias_naviera,
+                           crear_transferencias_notificacion,
+                           obtener_transferencias_notificaciones_pendientes,
+                           marcar_transferencias_notificaciones_vistas,
+                           registrar_transferencia, obtener_transferencias_casos,
+                           obtener_transferencias_detalle, folio_transferencia_existe)
+from app.transferencias import procesar_transferencias
+from app.transferencias_reporte import generar_documento_transferencias
+from app.transferencias_config import normalizar_texto as normalizar_texto_transferencias
 
 st.set_page_config(
     page_title="Sistema de Condonaciones",
@@ -159,6 +190,18 @@ def init():
         "contadores_previo": {},
         "paso_previo":       "inicio",
         "horario_previo":    {},
+        # ── Módulo Transferencias ────────────────────────────────
+        "trans_folio":              "",
+        "trans_responsable":        "",
+        "trans_df_recinto":         None,
+        "trans_df_n4":              None,
+        "trans_uploader_key_rec":   0,
+        "trans_uploader_key_n4":    0,
+        "trans_resultado":          None,   # resultado de procesar_transferencias()
+        "trans_overrides":          {},     # nombre_norm -> codigo elegido por el usuario
+        "trans_reporte_bytes":      None,
+        "trans_guardado":           False,
+        "trans_pag":                1,
     }
     for k, v in defs.items():
         if k not in st.session_state:
@@ -302,13 +345,14 @@ with col_user:
 
 # ── Navegación ──────────────────────────────────────────────────
 tabs_disponibles = ["📊 Análisis", "📋 Historial NC", "📖 Reglas de Aplicación",
-                    "🗂️ Gestión NC"]
+                    "🗂️ Gestión NC", "🔀 Transferencias"]
 if es_admin:
     tabs_disponibles.append("👥 Usuarios")
 
 # Índices dinámicos según el rol
-IDX_GESTION  = 3
-IDX_USUARIOS = 4 if es_admin else None
+IDX_GESTION       = 3
+IDX_TRANSFEREN    = 4
+IDX_USUARIOS      = 5 if es_admin else None
 
 # ── Popup de notificaciones al iniciar sesión ───────────────────
 if not st.session_state.get("notif_mostrado", False):
@@ -317,6 +361,11 @@ if not st.session_state.get("notif_mostrado", False):
         for n in notifs:
             st.toast(f"🔔 {n['mensaje']}", icon="🔔")
         marcar_notificaciones_vistas(usuario["id"])
+    notifs_t = obtener_transferencias_notificaciones_pendientes(usuario["id"])
+    if notifs_t:
+        for n in notifs_t:
+            st.toast(f"🔔 {n['mensaje']}", icon="🔔")
+        marcar_transferencias_notificaciones_vistas(usuario["id"])
     st.session_state["notif_mostrado"] = True
 
 nav = st.tabs(tabs_disponibles)
@@ -2362,6 +2411,241 @@ with nav[IDX_GESTION]:
         else:
             st.info("No se encontraron NCs.")
 
+# ════════════════════════════════════════════════════════════════
+#   PESTAÑA — TRANSFERENCIAS
+# ════════════════════════════════════════════════════════════════
+with nav[IDX_TRANSFEREN]:
+    st.markdown("<div class='sec-hdr'>🔀 Módulo de Transferencias</div>",
+                unsafe_allow_html=True)
+
+    sub_nav_t = st.tabs(["📤 Generar Transferencia", "📋 Casos Registrados"])
+
+    # ── Sub-pestaña: Generar Transferencia ───────────────────────
+    with sub_nav_t[0]:
+        colf1, colf2 = st.columns(2)
+        with colf1:
+            st.session_state["trans_folio"] = st.text_input(
+                "Folio", value=st.session_state["trans_folio"], key="trans_folio_input")
+        with colf2:
+            st.session_state["trans_responsable"] = st.text_input(
+                "Responsable (informativo)", value=st.session_state["trans_responsable"],
+                key="trans_resp_input")
+
+        st.markdown("<div class='sec-hdr'>Archivos de Entrada</div>", unsafe_allow_html=True)
+        ukr = st.session_state["trans_uploader_key_rec"]
+        ukn = st.session_state["trans_uploader_key_n4"]
+        fc1, fc2 = st.columns(2)
+        with fc1:
+            f_recinto = st.file_uploader("📄 Archivo Recinto", type=["xlsx", "xls"],
+                                          key=f"trans_recinto_{ukr}")
+            if f_recinto:
+                try:
+                    st.session_state["trans_df_recinto"] = pd.read_excel(f_recinto)
+                    st.success(f"✔ {f_recinto.name}")
+                except Exception as e:
+                    st.error(str(e))
+            if st.session_state["trans_df_recinto"] is not None:
+                if st.button("🗑️ Quitar y volver a subir", key="trans_quitar_recinto"):
+                    st.session_state["trans_df_recinto"] = None
+                    st.session_state["trans_uploader_key_rec"] += 1
+                    st.session_state["trans_resultado"] = None
+                    st.session_state["trans_reporte_bytes"] = None
+                    st.rerun()
+        with fc2:
+            f_n4 = st.file_uploader("📄 Archivo Sistema N4", type=["xlsx", "xls"],
+                                     key=f"trans_n4_{ukn}")
+            if f_n4:
+                try:
+                    st.session_state["trans_df_n4"] = pd.read_excel(f_n4)
+                    st.success(f"✔ {f_n4.name}")
+                except Exception as e:
+                    st.error(str(e))
+            if st.session_state["trans_df_n4"] is not None:
+                if st.button("🗑️ Quitar y volver a subir", key="trans_quitar_n4"):
+                    st.session_state["trans_df_n4"] = None
+                    st.session_state["trans_uploader_key_n4"] += 1
+                    st.session_state["trans_resultado"] = None
+                    st.session_state["trans_reporte_bytes"] = None
+                    st.rerun()
+
+        puede_procesar_t = (
+            st.session_state["trans_df_recinto"] is not None
+            and st.session_state["trans_df_n4"] is not None
+            and st.session_state["trans_folio"].strip() != ""
+        )
+        if not st.session_state["trans_folio"].strip():
+            st.caption("⚠️ Captura el folio antes de procesar.")
+
+        if st.button("⚙️ Procesar", type="primary", disabled=not puede_procesar_t,
+                     key="trans_btn_procesar"):
+            folio_limpio = st.session_state["trans_folio"].strip()
+            if not st.session_state["trans_guardado"] and folio_transferencia_existe(folio_limpio):
+                st.error("Ese folio ya se usó en otro caso registrado. Captura uno distinto.")
+            else:
+                catalogo_r = obtener_transferencias_recintos()
+                catalogo_n = obtener_transferencias_navieras()
+                st.session_state["trans_resultado"] = procesar_transferencias(
+                    st.session_state["trans_df_recinto"], st.session_state["trans_df_n4"],
+                    catalogo_r, catalogo_n,
+                    overrides_recinto=st.session_state["trans_overrides"],
+                )
+                st.session_state["trans_reporte_bytes"] = None
+                st.session_state["trans_guardado"] = False
+                st.rerun()
+
+        resultado_t = st.session_state["trans_resultado"]
+        if resultado_t:
+            if resultado_t["error_bloqueante"]:
+                st.error(resultado_t["error_bloqueante"])
+                st.caption("Corrige el archivo que corresponda y vuelve a subirlo arriba antes de procesar de nuevo.")
+
+            elif resultado_t["recintos_no_reconocidos"]:
+                for a in resultado_t["alertas"]:
+                    st.warning(a)
+                st.markdown("<div class='sec-hdr'>🏷️ Recintos no reconocidos</div>",
+                            unsafe_allow_html=True)
+                st.info("Relaciona cada nombre con un código ya existente para continuar. "
+                        "La fila se procesa de inmediato; el nombre queda pendiente de "
+                        "aprobación por un Admin.")
+                catalogo_r_sel = obtener_transferencias_recintos()
+                codigos_unicos = sorted({r["codigo"] for r in catalogo_r_sel})
+                for nombre_nr in resultado_t["recintos_no_reconocidos"]:
+                    rc1, rc2 = st.columns([3, 2])
+                    with rc1:
+                        st.write(f"**{nombre_nr}**")
+                    with rc2:
+                        st.selectbox("Código", codigos_unicos,
+                                     key=f"trans_recinto_sel_{nombre_nr}",
+                                     label_visibility="collapsed")
+
+                if st.button("💾 Guardar relaciones y reprocesar", key="trans_btn_guardar_rel"):
+                    for nombre_nr in resultado_t["recintos_no_reconocidos"]:
+                        cod_sel = st.session_state.get(f"trans_recinto_sel_{nombre_nr}")
+                        if cod_sel is None:
+                            continue
+                        st.session_state["trans_overrides"][normalizar_texto_transferencias(nombre_nr)] = cod_sel
+                        ok_prop, prop_id = proponer_transferencias_recinto(
+                            cod_sel, nombre_nr, usuario["id"], usuario["nombre_completo"])
+                        if ok_prop:
+                            for u in _cached_usuarios():
+                                if u["rol"] == "admin" and u["activo"]:
+                                    crear_transferencias_notificacion(
+                                        u["id"], prop_id,
+                                        f"Nuevo nombre de recinto propuesto: '{nombre_nr}' → "
+                                        f"código {cod_sel} (por {usuario['nombre_completo']})."
+                                    )
+                    invalidar_cache_transferencias()
+                    catalogo_r2 = obtener_transferencias_recintos()
+                    catalogo_n2 = obtener_transferencias_navieras()
+                    st.session_state["trans_resultado"] = procesar_transferencias(
+                        st.session_state["trans_df_recinto"], st.session_state["trans_df_n4"],
+                        catalogo_r2, catalogo_n2,
+                        overrides_recinto=st.session_state["trans_overrides"],
+                    )
+                    st.rerun()
+
+            else:
+                for a in resultado_t["alertas"]:
+                    st.warning(a)
+
+                filas_t = resultado_t["filas"]
+                st.success(f"✔ Listo — {len(filas_t)} contenedor(es) procesado(s).")
+                df_prev_t = pd.DataFrame(filas_t)[[
+                    "contenedor", "id_solicitante", "linea_op_texto", "type_arch_iso",
+                    "recinto_origen_codigo", "recinto_destino_codigo",
+                ]]
+                df_prev_t.columns = ["Contenedor", "Id Solicitante", "Linea Op",
+                                      "Type Arch ISO", "Recinto Origen", "Recinto Destino"]
+                st.dataframe(df_prev_t, width='stretch', hide_index=True)
+
+                if st.session_state["trans_reporte_bytes"] is None:
+                    _buf_t = io.BytesIO()
+                    generar_documento_transferencias(filas_t, _buf_t)
+                    st.session_state["trans_reporte_bytes"] = _buf_t.getvalue()
+
+                if not st.session_state["trans_guardado"]:
+                    ok_g, _ = registrar_transferencia(
+                        st.session_state["trans_folio"].strip(),
+                        st.session_state["trans_responsable"].strip(),
+                        usuario["id"], usuario["nombre_completo"], filas_t,
+                    )
+                    if ok_g:
+                        st.session_state["trans_guardado"] = True
+                        invalidar_cache_transferencias()
+
+                st.download_button(
+                    "⬇️ Descargar documento final (Excel)",
+                    data=st.session_state["trans_reporte_bytes"],
+                    file_name=f"Transferencia_{st.session_state['trans_folio'].strip()}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    key="trans_btn_descargar",
+                )
+
+                if st.button("🆕 Nuevo caso", key="trans_btn_nuevo"):
+                    st.session_state["trans_folio"]         = ""
+                    st.session_state["trans_responsable"]   = ""
+                    st.session_state["trans_df_recinto"]    = None
+                    st.session_state["trans_df_n4"]         = None
+                    st.session_state["trans_resultado"]     = None
+                    st.session_state["trans_overrides"]     = {}
+                    st.session_state["trans_reporte_bytes"] = None
+                    st.session_state["trans_guardado"]      = False
+                    st.session_state["trans_uploader_key_rec"] += 1
+                    st.session_state["trans_uploader_key_n4"]  += 1
+                    st.rerun()
+
+    # ── Sub-pestaña: Casos Registrados (consulta pública, solo lectura) ──
+    with sub_nav_t[1]:
+        st.markdown("<div class='sec-hdr'>📋 Casos Registrados</div>", unsafe_allow_html=True)
+        casos_t = _cached_transferencias_casos()
+
+        buscar_t = st.text_input("🔎 Buscar por folio o responsable", key="trans_buscar")
+        if buscar_t.strip():
+            _bt = buscar_t.strip().upper()
+            casos_t = [c for c in casos_t
+                       if _bt in (c.get("folio") or "").upper()
+                       or _bt in (c.get("responsable") or "").upper()]
+
+        if not casos_t:
+            st.info("No hay casos registrados todavía.")
+        else:
+            por_pag_t = 20
+            total_pags_t = max(1, (len(casos_t) + por_pag_t - 1) // por_pag_t)
+            pag_t = min(st.session_state["trans_pag"], total_pags_t)
+            ini_t = (pag_t - 1) * por_pag_t
+            pagina_t = casos_t[ini_t: ini_t + por_pag_t]
+
+            for c in pagina_t:
+                with st.container(border=True):
+                    cc1, cc2, cc3 = st.columns([2, 2, 1])
+                    with cc1:
+                        st.write(f"**Folio:** {c['folio']}")
+                        st.write(f"**Responsable:** {c.get('responsable') or '—'}")
+                    with cc2:
+                        st.write(f"**Fecha:** {fecha_hora_mx(c.get('fecha_creacion'))}")
+                        st.write(f"**Contenedores:** {c.get('total_contenedores', 0)}")
+                    with cc3:
+                        if st.button("🔍 Ver detalle", key=f"vdet_trans_{c['id']}"):
+                            with st.spinner("Cargando..."):
+                                det_t = obtener_transferencias_detalle(c["id"])
+                            if det_t:
+                                st.dataframe(pd.DataFrame(det_t), width='stretch', hide_index=True)
+                            else:
+                                st.info("Sin detalle disponible.")
+
+            pp1, pp2, pp3 = st.columns([1, 2, 1])
+            with pp1:
+                if st.button("◀ Anterior", disabled=pag_t <= 1, key="trans_pag_ant"):
+                    st.session_state["trans_pag"] = pag_t - 1
+                    st.rerun()
+            with pp2:
+                st.markdown(f"<div style='text-align:center;'>Página {pag_t} de {total_pags_t}</div>",
+                            unsafe_allow_html=True)
+            with pp3:
+                if st.button("Siguiente ▶", disabled=pag_t >= total_pags_t, key="trans_pag_sig"):
+                    st.session_state["trans_pag"] = pag_t + 1
+                    st.rerun()
+
 if es_admin and IDX_USUARIOS is not None:
     with nav[IDX_USUARIOS]:
         st.markdown("<div class='admin-hdr'>Gestión de Usuarios</div>",
@@ -2507,4 +2791,74 @@ if es_admin and IDX_USUARIOS is not None:
             with ec3:
                 if st.button("🗑️", key=f"del_est_{e['id']}"):
                     eliminar_nc_estatus(e["id"])
+                    st.rerun()
+
+        # ── Catálogos del módulo Transferencias (solo Admin) ─────
+        st.markdown("---")
+        st.markdown("<div class='admin-hdr'>Catálogo de Recintos (Transferencias)</div>",
+                    unsafe_allow_html=True)
+        st.caption("Los códigos son fijos y no se crean ni editan aquí — solo se aprueban "
+                   "o rechazan nombres nuevos propuestos por los usuarios.")
+
+        recintos_todos = _cached_transferencias_recintos()
+        pendientes_r = [r for r in recintos_todos if not r.get("aprobado")]
+        aprobados_r  = [r for r in recintos_todos if r.get("aprobado")]
+
+        if pendientes_r:
+            st.markdown("**🟡 Nombres pendientes de aprobar**")
+            for r in pendientes_r:
+                rc1, rc2, rc3, rc4 = st.columns([3, 2, 1, 1])
+                with rc1:
+                    st.write(f"**{r['nombre']}** → código {r['codigo']}")
+                with rc2:
+                    st.caption(f"Propuesto por: {r.get('propuesto_por_nombre') or '—'}")
+                with rc3:
+                    if st.button("✅", key=f"aprob_rec_{r['id']}"):
+                        aprobar_transferencias_recinto(r["id"], usuario["id"])
+                        invalidar_cache_transferencias()
+                        st.rerun()
+                with rc4:
+                    if st.button("🗑️", key=f"rech_rec_{r['id']}"):
+                        rechazar_transferencias_recinto(r["id"])
+                        invalidar_cache_transferencias()
+                        st.rerun()
+        else:
+            st.caption("No hay nombres pendientes de aprobar.")
+
+        with st.expander("📄 Ver tabla completa de códigos y nombres reconocidos"):
+            if aprobados_r:
+                df_rec_admin = pd.DataFrame(aprobados_r)[["codigo", "nombre"]].sort_values("codigo")
+                st.dataframe(df_rec_admin, width='stretch', hide_index=True)
+            else:
+                st.info("Sin registros.")
+
+        st.markdown("<div class='admin-hdr'>Catálogo de Navieras (Transferencias)</div>",
+                    unsafe_allow_html=True)
+        st.caption("Aquí sí se agregan naviera + código nuevos directamente — el archivo "
+                   "de origen no tiene variabilidad.")
+
+        with st.expander("➕ Agregar naviera nueva"):
+            nv1, nv2 = st.columns(2)
+            with nv1:
+                nueva_naviera_nombre = st.text_input("Nombre (Line Op)", key="nueva_naviera_nombre")
+            with nv2:
+                nueva_naviera_codigo = st.number_input("Código", min_value=0, step=1,
+                                                        key="nueva_naviera_codigo")
+            if st.button("Agregar naviera", key="btn_add_naviera"):
+                if nueva_naviera_nombre.strip():
+                    crear_transferencias_naviera(int(nueva_naviera_codigo), nueva_naviera_nombre.strip())
+                    invalidar_cache_transferencias()
+                    st.success("Naviera agregada")
+                    st.rerun()
+
+        for n in _cached_transferencias_navieras():
+            ncc1, ncc2, ncc3 = st.columns([3, 2, 1])
+            with ncc1:
+                st.write(f"**{n['nombre']}**")
+            with ncc2:
+                st.write(f"Código: {n['codigo']}")
+            with ncc3:
+                if st.button("🗑️", key=f"del_nav_{n['id']}"):
+                    eliminar_transferencias_naviera(n["id"])
+                    invalidar_cache_transferencias()
                     st.rerun()

@@ -2422,60 +2422,48 @@ with nav[IDX_TRANSFEREN]:
     sub_nav_t = st.tabs(["📤 Generar Transferencia", "📋 Casos Registrados"])
 
     # ── Sub-pestaña: Generar Transferencia ───────────────────────
+    # Todo se agrupa en un st.form para que Streamlit NO recargue la
+    # página (efecto gris de "cargando") mientras se llenan folio,
+    # responsable y se suben los archivos — solo se recarga una vez,
+    # al darle clic a "Procesar". Por eso el botón ya no se puede
+    # deshabilitar dinámicamente: si falta algo, se avisa con un
+    # mensaje de error después de darle clic.
     with sub_nav_t[0]:
-        colf1, colf2 = st.columns(2)
-        with colf1:
-            st.session_state["trans_folio"] = st.text_input(
-                "Folio", value=st.session_state["trans_folio"], key="trans_folio_input")
-        with colf2:
-            st.session_state["trans_responsable"] = st.text_input(
-                "Responsable (informativo)", value=st.session_state["trans_responsable"],
-                key="trans_resp_input")
+        with st.form("form_generar_transferencia", clear_on_submit=False):
+            colf1, colf2 = st.columns(2)
+            with colf1:
+                folio_input = st.text_input(
+                    "Folio", value=st.session_state["trans_folio"], key="trans_folio_input")
+            with colf2:
+                responsable_input = st.text_input(
+                    "Responsable (informativo)", value=st.session_state["trans_responsable"],
+                    key="trans_resp_input")
 
-        st.markdown("<div class='sec-hdr'>Archivos de Entrada</div>", unsafe_allow_html=True)
-        ukr = st.session_state["trans_uploader_key_rec"]
-        ukn = st.session_state["trans_uploader_key_n4"]
-        fc1, fc2 = st.columns(2)
-        with fc1:
-            f_recinto = st.file_uploader("📄 Archivo Recinto", type=["xlsx", "xls"],
-                                          key=f"trans_recinto_{ukr}")
-            # No se lee el Excel aquí — solo se guarda la referencia del
-            # archivo subido. La lectura pesada se hace una sola vez, al
-            # darle clic a "Procesar" más abajo, para no repetirla en cada
-            # rerender de la página (que en Streamlit ocurre con cualquier
-            # interacción, no solo al subir el archivo).
-            if f_recinto is not None:
-                st.success(f"✔ {f_recinto.name}")
-                if st.button("🗑️ Quitar y volver a subir", key="trans_quitar_recinto"):
-                    st.session_state["trans_df_recinto"] = None
-                    st.session_state["trans_uploader_key_rec"] += 1
-                    st.session_state["trans_resultado"] = None
-                    st.session_state["trans_reporte_bytes"] = None
-                    st.rerun()
-        with fc2:
-            f_n4 = st.file_uploader("📄 Archivo Sistema N4", type=["xlsx", "xls"],
-                                     key=f"trans_n4_{ukn}")
-            if f_n4 is not None:
-                st.success(f"✔ {f_n4.name}")
-                if st.button("🗑️ Quitar y volver a subir", key="trans_quitar_n4"):
-                    st.session_state["trans_df_n4"] = None
-                    st.session_state["trans_uploader_key_n4"] += 1
-                    st.session_state["trans_resultado"] = None
-                    st.session_state["trans_reporte_bytes"] = None
-                    st.rerun()
+            st.markdown("<div class='sec-hdr'>Archivos de Entrada</div>", unsafe_allow_html=True)
+            ukr = st.session_state["trans_uploader_key_rec"]
+            ukn = st.session_state["trans_uploader_key_n4"]
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                f_recinto = st.file_uploader("📄 Archivo Recinto", type=["xlsx", "xls"],
+                                              key=f"trans_recinto_{ukr}")
+            with fc2:
+                f_n4 = st.file_uploader("📄 Archivo Sistema N4", type=["xlsx", "xls"],
+                                         key=f"trans_n4_{ukn}")
 
-        puede_procesar_t = (
-            f_recinto is not None
-            and f_n4 is not None
-            and st.session_state["trans_folio"].strip() != ""
-        )
-        if not st.session_state["trans_folio"].strip():
-            st.caption("⚠️ Captura el folio antes de procesar.")
+            st.caption("Captura el folio, sube ambos archivos y dale clic a Procesar. "
+                       "Si falta algo, te lo indicamos aquí mismo.")
+            submitted_t = st.form_submit_button("⚙️ Procesar", type="primary")
 
-        if st.button("⚙️ Procesar", type="primary", disabled=not puede_procesar_t,
-                     key="trans_btn_procesar"):
-            folio_limpio = st.session_state["trans_folio"].strip()
-            if not st.session_state["trans_guardado"] and folio_transferencia_existe(folio_limpio):
+        st.session_state["trans_folio"] = folio_input
+        st.session_state["trans_responsable"] = responsable_input
+
+        if submitted_t:
+            folio_limpio = folio_input.strip()
+            if not folio_limpio:
+                st.error("Captura el folio antes de procesar.")
+            elif f_recinto is None or f_n4 is None:
+                st.error("Sube ambos archivos (Archivo Recinto y Archivo Sistema N4) antes de procesar.")
+            elif not st.session_state["trans_guardado"] and folio_transferencia_existe(folio_limpio):
                 st.error("Ese folio ya se usó en otro caso registrado. Captura uno distinto.")
             else:
                 _lectura_ok = True

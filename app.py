@@ -2439,13 +2439,13 @@ with nav[IDX_TRANSFEREN]:
         with fc1:
             f_recinto = st.file_uploader("📄 Archivo Recinto", type=["xlsx", "xls"],
                                           key=f"trans_recinto_{ukr}")
-            if f_recinto:
-                try:
-                    st.session_state["trans_df_recinto"] = pd.read_excel(f_recinto)
-                    st.success(f"✔ {f_recinto.name}")
-                except Exception as e:
-                    st.error(str(e))
-            if st.session_state["trans_df_recinto"] is not None:
+            # No se lee el Excel aquí — solo se guarda la referencia del
+            # archivo subido. La lectura pesada se hace una sola vez, al
+            # darle clic a "Procesar" más abajo, para no repetirla en cada
+            # rerender de la página (que en Streamlit ocurre con cualquier
+            # interacción, no solo al subir el archivo).
+            if f_recinto is not None:
+                st.success(f"✔ {f_recinto.name}")
                 if st.button("🗑️ Quitar y volver a subir", key="trans_quitar_recinto"):
                     st.session_state["trans_df_recinto"] = None
                     st.session_state["trans_uploader_key_rec"] += 1
@@ -2455,16 +2455,8 @@ with nav[IDX_TRANSFEREN]:
         with fc2:
             f_n4 = st.file_uploader("📄 Archivo Sistema N4", type=["xlsx", "xls"],
                                      key=f"trans_n4_{ukn}")
-            if f_n4:
-                try:
-                    # El Archivo Sistema N4 trae 4 filas de encabezado del
-                    # reporte antes de los nombres de columna reales (fila 5).
-                    st.session_state["trans_df_n4"] = pd.read_excel(
-                        f_n4, header=N4_FILA_ENCABEZADO)
-                    st.success(f"✔ {f_n4.name}")
-                except Exception as e:
-                    st.error(str(e))
-            if st.session_state["trans_df_n4"] is not None:
+            if f_n4 is not None:
+                st.success(f"✔ {f_n4.name}")
                 if st.button("🗑️ Quitar y volver a subir", key="trans_quitar_n4"):
                     st.session_state["trans_df_n4"] = None
                     st.session_state["trans_uploader_key_n4"] += 1
@@ -2473,8 +2465,8 @@ with nav[IDX_TRANSFEREN]:
                     st.rerun()
 
         puede_procesar_t = (
-            st.session_state["trans_df_recinto"] is not None
-            and st.session_state["trans_df_n4"] is not None
+            f_recinto is not None
+            and f_n4 is not None
             and st.session_state["trans_folio"].strip() != ""
         )
         if not st.session_state["trans_folio"].strip():
@@ -2486,16 +2478,27 @@ with nav[IDX_TRANSFEREN]:
             if not st.session_state["trans_guardado"] and folio_transferencia_existe(folio_limpio):
                 st.error("Ese folio ya se usó en otro caso registrado. Captura uno distinto.")
             else:
-                catalogo_r = obtener_transferencias_recintos()
-                catalogo_n = obtener_transferencias_navieras()
-                st.session_state["trans_resultado"] = procesar_transferencias(
-                    st.session_state["trans_df_recinto"], st.session_state["trans_df_n4"],
-                    catalogo_r, catalogo_n,
-                    overrides_recinto=st.session_state["trans_overrides"],
-                )
-                st.session_state["trans_reporte_bytes"] = None
-                st.session_state["trans_guardado"] = False
-                st.rerun()
+                _lectura_ok = True
+                try:
+                    # Aquí, y solo aquí, se leen los 2 archivos Excel.
+                    st.session_state["trans_df_recinto"] = pd.read_excel(f_recinto)
+                    st.session_state["trans_df_n4"] = pd.read_excel(
+                        f_n4, header=N4_FILA_ENCABEZADO)
+                except Exception as e:
+                    st.error(f"No se pudo leer alguno de los archivos: {e}")
+                    _lectura_ok = False
+
+                if _lectura_ok:
+                    catalogo_r = obtener_transferencias_recintos()
+                    catalogo_n = obtener_transferencias_navieras()
+                    st.session_state["trans_resultado"] = procesar_transferencias(
+                        st.session_state["trans_df_recinto"], st.session_state["trans_df_n4"],
+                        catalogo_r, catalogo_n,
+                        overrides_recinto=st.session_state["trans_overrides"],
+                    )
+                    st.session_state["trans_reporte_bytes"] = None
+                    st.session_state["trans_guardado"] = False
+                    st.rerun()
 
         resultado_t = st.session_state["trans_resultado"]
         if resultado_t:

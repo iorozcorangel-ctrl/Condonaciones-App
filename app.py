@@ -2444,11 +2444,22 @@ with nav[IDX_TRANSFEREN]:
             ukn = st.session_state["trans_uploader_key_n4"]
             fc1, fc2 = st.columns(2)
             with fc1:
-                f_recinto = st.file_uploader("📄 Archivo Recinto", type=["xlsx", "xls"],
+                f_recinto = st.file_uploader("📄 Archivo Recinto", type=["xlsx"],
                                               key=f"trans_recinto_{ukr}")
+                st.caption(
+                    "Debe tener estas columnas (el nombre puede variar un poco): "
+                    "**CATEGORIA**, **CONTENEDOR**, **RECINTO ORIGEN**, **RECINTO DESTINO** "
+                    "(obligatorias) y **LINEA NAVIERA** (opcional)."
+                )
             with fc2:
-                f_n4 = st.file_uploader("📄 Archivo Sistema N4", type=["xlsx", "xls"],
+                f_n4 = st.file_uploader("📄 Archivo Sistema N4", type=["xlsx"],
                                          key=f"trans_n4_{ukn}")
+                st.caption(
+                    "Debe tener estas columnas (el nombre puede variar un poco): "
+                    "**Unit Nbr**, **Line Op**, **Type Arch ISO** (obligatorias) y "
+                    "**T-State**, **O/B Dclrd Mode** (opcionales). Los encabezados deben "
+                    "estar en la fila 5 del Excel."
+                )
 
             st.caption("Captura el folio, sube ambos archivos y dale clic a Procesar. "
                        "Si falta algo, te lo indicamos aquí mismo.")

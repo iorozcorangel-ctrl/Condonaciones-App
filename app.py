@@ -2453,8 +2453,8 @@ with nav[IDX_TRANSFEREN]:
                 st.caption(
                     "Debe tener estas columnas (el nombre puede variar un poco): "
                     "**Unit Nbr**, **Line Op**, **Type Arch ISO** (obligatorias) y "
-                    "**T-State**, **O/B Dclrd Mode** (opcionales). Los encabezados deben "
-                    "estar en la fila 5 del Excel."
+                    "**T-State**, **O/B Dclrd Mode**, **Stop-Vsl**, **Stop-Road** "
+                    "(opcionales). Los encabezados deben estar en la fila 5 del Excel."
                 )
 
             st.caption("Sube ambos archivos y dale clic a Procesar. "

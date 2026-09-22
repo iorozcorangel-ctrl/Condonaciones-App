@@ -2506,6 +2506,21 @@ with nav[IDX_TRANSFEREN]:
                            "corrige el Archivo Recinto y vuelve a subirlo con el botón de abajo.")
                 catalogo_r_sel = obtener_transferencias_recintos()
                 codigos_unicos = sorted({r["codigo"] for r in catalogo_r_sel})
+
+                with st.expander("📖 Ver catálogo actual de Recintos (código → nombres ya registrados)",
+                                  expanded=True):
+                    st.caption("Úsalo como referencia si un nombre viene escrito de forma poco "
+                               "común, para saber a qué código relacionarlo.")
+                    por_codigo_r = {}
+                    for r in catalogo_r_sel:
+                        etiqueta = r["nombre"] + ("" if r.get("aprobado") else " (pendiente)")
+                        por_codigo_r.setdefault(r["codigo"], []).append(etiqueta)
+                    df_catalogo_r = pd.DataFrame([
+                        {"Código": cod, "Nombres registrados": ", ".join(sorted(nombres))}
+                        for cod, nombres in sorted(por_codigo_r.items())
+                    ])
+                    st.dataframe(df_catalogo_r, width='stretch', hide_index=True, height=250)
+
                 for nombre_nr in resultado_t["recintos_no_reconocidos"]:
                     rc1, rc2 = st.columns([3, 2])
                     with rc1:

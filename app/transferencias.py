@@ -26,12 +26,17 @@ def procesar_archivo_recinto(df_raw):
     Lee el Archivo Recinto, filtra por CATEGORIA (solo TRANSBORDO) y deja
     listas las columnas necesarias, ya normalizadas.
 
-    Regresa (df_proc, alertas, error):
+    Regresa (df_proc, alertas, error, contenedores_no_transbordo):
       - df_proc: DataFrame con columnas CONTENEDOR, LINEA_NAVIERA,
         RECINTO_ORIGEN_NOMBRE, RECINTO_DESTINO_NOMBRE (o None si hubo error)
       - alertas: lista de strings (informativas)
       - error: string si falta una columna obligatoria, si no se pudo
         procesar nada; None si todo bien
+      - contenedores_no_transbordo: set de contenedores (normalizados) que
+        SÍ vienen en el Archivo Recinto pero con una categoría distinta de
+        Transbordo (p. ej. Importación) y por eso se excluyeron del
+        proceso a propósito — se usa más adelante para que el cruce contra
+        el Archivo Sistema N4 no los marque como discrepancia.
     """
     alertas = []
     cols = df_raw.columns
@@ -51,10 +56,17 @@ def procesar_archivo_recinto(df_raw):
         return None, alertas, (
             f"El Archivo Recinto no tiene la(s) columna(s): {', '.join(faltantes)}. "
             f"Favor de verificar los encabezados del archivo."
-        )
+        ), set()
 
     df = df_raw.copy()
     df = df[df[col_cont].notna()].copy()
+
+    # Se normaliza el contenedor ANTES de filtrar por categoría, para poder
+    # identificar qué contenedores se excluyen (Importación u otra
+    # categoría distinta de Transbordo) y así, más adelante, no marcarlos
+    # como discrepancia si también aparecen en el Archivo Sistema N4.
+    df["CONTENEDOR"] = df[col_cont].apply(normalizar_contenedor)
+    df = df[df["CONTENEDOR"] != ""].copy()
 
     # ── Filtro por CATEGORIA ─────────────────────────────────────
     df["_categoria_norm"] = df[col_categoria].apply(normalizar_texto)
@@ -64,11 +76,12 @@ def procesar_archivo_recinto(df_raw):
         f"Total Transbordos: {total_transbordo} — "
         f"Total Importaciones (eliminadas): {total_importacion}"
     )
-    df = df[df["_categoria_norm"] == CATEGORIA_TRANSBORDO].copy()
 
-    # ── Normalizar contenedor y validar formato ──────────────────
-    df["CONTENEDOR"] = df[col_cont].apply(normalizar_contenedor)
-    df = df[df["CONTENEDOR"] != ""].copy()
+    contenedores_no_transbordo = set(
+        df.loc[df["_categoria_norm"] != CATEGORIA_TRANSBORDO, "CONTENEDOR"]
+    )
+
+    df = df[df["_categoria_norm"] == CATEGORIA_TRANSBORDO].copy()
 
     invalidos = [c for c in df["CONTENEDOR"] if not validar_formato_contenedor(c)]
     if invalidos:
@@ -84,7 +97,7 @@ def procesar_archivo_recinto(df_raw):
     df = df[["CONTENEDOR", "LINEA_NAVIERA", "RECINTO_ORIGEN_NOMBRE", "RECINTO_DESTINO_NOMBRE"]]
     df = df.reset_index(drop=True)
 
-    return df, alertas, None
+    return df, alertas, None, contenedores_no_transbordo
 
 
 # ════════════════════════════════════════════════════════════════
@@ -164,19 +177,27 @@ def procesar_archivo_n4(df_raw):
 #   CRUCE ENTRE AMBOS ARCHIVOS (ÚNICA VALIDACIÓN BLOQUEANTE)
 # ════════════════════════════════════════════════════════════════
 
-def validar_cruce(df_recinto, df_n4):
+def validar_cruce(df_recinto, df_n4, contenedores_excluidos=None):
     """
     Compara CONTENEDOR (Archivo Recinto) contra UNIT_NBR (Archivo Sistema
     N4). Si no cuadran al 100%, regresa un error bloqueante — es la ÚNICA
     validación de este módulo que detiene el proceso.
 
+    contenedores_excluidos: set de contenedores que SÍ vienen en el Archivo
+    Recinto pero con categoría distinta de Transbordo (p. ej. Importación).
+    Si uno de estos aparece en el Archivo Sistema N4, NO se marca como
+    discrepancia — se excluyeron del proceso a propósito, no por un error
+    real de captura.
+
     Regresa (ok, mensaje_error, totales)
     """
+    contenedores_excluidos = contenedores_excluidos or set()
+
     set_recinto = set(df_recinto["CONTENEDOR"])
     set_n4      = set(df_n4["UNIT_NBR"])
 
     faltan_en_n4      = sorted(set_recinto - set_n4)
-    faltan_en_recinto = sorted(set_n4 - set_recinto)
+    faltan_en_recinto = sorted((set_n4 - set_recinto) - contenedores_excluidos)
 
     totales = {
         "total_recinto": len(set_recinto),
@@ -257,7 +278,7 @@ def procesar_transferencias(df_recinto_raw, df_n4_raw, catalogo_recintos,
     """
     alertas = []
 
-    df_recinto, alertas_r, error_r = procesar_archivo_recinto(df_recinto_raw)
+    df_recinto, alertas_r, error_r, contenedores_no_transbordo = procesar_archivo_recinto(df_recinto_raw)
     if error_r:
         return {"error_bloqueante": error_r, "alertas": [], "recintos_no_reconocidos": [],
                 "filas": [], "totales": {}}
@@ -270,10 +291,22 @@ def procesar_transferencias(df_recinto_raw, df_n4_raw, catalogo_recintos,
     alertas += alertas_n4
 
     # ── Cruce (bloqueante) ───────────────────────────────────────
-    ok, error_cruce, totales = validar_cruce(df_recinto, df_n4)
+    # Los contenedores que en el Archivo Recinto son Importación (no
+    # Transbordo) se excluyen del cruce: si también vienen en el Archivo
+    # Sistema N4, no se consideran discrepancia, ya que a propósito no
+    # forman parte de este proceso.
+    ok, error_cruce, totales = validar_cruce(df_recinto, df_n4, contenedores_no_transbordo)
     if not ok:
         return {"error_bloqueante": error_cruce, "alertas": alertas,
                 "recintos_no_reconocidos": [], "filas": [], "totales": totales}
+
+    ignorados_por_categoria = sorted(set(df_n4["UNIT_NBR"]) & contenedores_no_transbordo)
+    if ignorados_por_categoria:
+        alertas.append(
+            f"Contenedor(es) ignorado(s) en el cruce porque en el Archivo Recinto son "
+            f"Importación (no Transbordo), aunque sí aparecen en el Archivo Sistema N4: "
+            f"{', '.join(ignorados_por_categoria)}"
+        )
 
     # ── Validación LINEA NAVIERA vs Line Op (nunca bloquea) ──────
     n4_por_cont = df_n4.set_index("UNIT_NBR")

@@ -300,12 +300,25 @@ def procesar_transferencias(df_recinto_raw, df_n4_raw, catalogo_recintos,
         return {"error_bloqueante": error_cruce, "alertas": alertas,
                 "recintos_no_reconocidos": [], "filas": [], "totales": totales}
 
-    ignorados_por_categoria = sorted(set(df_n4["UNIT_NBR"]) & contenedores_no_transbordo)
-    if ignorados_por_categoria:
+    # Contenedores de Importación (no Transbordo) que SÍ aparecen en el N4:
+    # se ignoran del cruce, solo aviso informativo (nunca bloquea).
+    ignorados_en_n4 = sorted(set(df_n4["UNIT_NBR"]) & contenedores_no_transbordo)
+    if ignorados_en_n4:
         alertas.append(
             f"Contenedor(es) ignorado(s) en el cruce porque en el Archivo Recinto son "
             f"Importación (no Transbordo), aunque sí aparecen en el Archivo Sistema N4: "
-            f"{', '.join(ignorados_por_categoria)}"
+            f"{', '.join(ignorados_en_n4)}"
+        )
+
+    # Contenedores de Importación (no Transbordo) que NO aparecen en el N4:
+    # tampoco se validan — solo se avisa, nunca es un error. Lo único que
+    # nos interesa para el cruce son los contenedores de Transbordo.
+    ignorados_fuera_n4 = sorted(contenedores_no_transbordo - set(df_n4["UNIT_NBR"]))
+    if ignorados_fuera_n4:
+        alertas.append(
+            f"Contenedor(es) de Importación en el Archivo Recinto que no aparecen en el "
+            f"Archivo Sistema N4 (no se consideran en el cruce): "
+            f"{', '.join(ignorados_fuera_n4)}"
         )
 
     # ── Validación LINEA NAVIERA vs Line Op (nunca bloquea) ──────

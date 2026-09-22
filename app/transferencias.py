@@ -14,6 +14,7 @@ from app.transferencias_config import (
     COL_RECINTO_ALIAS, COL_N4_ALIAS, CATEGORIA_TRANSBORDO, CATEGORIA_IMPORTACION,
     OB_DCLRD_MODE_VESSEL, OB_DCLRD_MODE_TRUCK, T_STATE_INBOUND, T_STATE_YARD,
     TRUCKING_FIJO, ID_ESTADO_CONTENEDOR_FIJO, normalizar_texto, encontrar_columna,
+    es_valor_verdadero,
 )
 
 
@@ -115,11 +116,13 @@ def procesar_archivo_n4(df_raw):
     alertas = []
     cols = df_raw.columns
 
-    col_ob   = encontrar_columna(cols, COL_N4_ALIAS["ob_dclrd_mode"])
-    col_unit = encontrar_columna(cols, COL_N4_ALIAS["unit_nbr"])
-    col_tst  = encontrar_columna(cols, COL_N4_ALIAS["t_state"])
-    col_line = encontrar_columna(cols, COL_N4_ALIAS["line_op"])
-    col_iso  = encontrar_columna(cols, COL_N4_ALIAS["type_arch_iso"])
+    col_ob    = encontrar_columna(cols, COL_N4_ALIAS["ob_dclrd_mode"])
+    col_unit  = encontrar_columna(cols, COL_N4_ALIAS["unit_nbr"])
+    col_tst   = encontrar_columna(cols, COL_N4_ALIAS["t_state"])
+    col_line  = encontrar_columna(cols, COL_N4_ALIAS["line_op"])
+    col_iso   = encontrar_columna(cols, COL_N4_ALIAS["type_arch_iso"])
+    col_svsl  = encontrar_columna(cols, COL_N4_ALIAS["stop_vsl"])
+    col_sroad = encontrar_columna(cols, COL_N4_ALIAS["stop_road"])
 
     faltantes = []
     if not col_unit: faltantes.append("Unit Nbr")
@@ -149,6 +152,8 @@ def procesar_archivo_n4(df_raw):
     df["TYPE_ARCH_ISO"] = df[col_iso]
     df["T_STATE"]       = df[col_tst].apply(normalizar_texto) if col_tst else ""
     df["OB_DCLRD_MODE"] = df[col_ob].apply(normalizar_texto) if col_ob else ""
+    df["STOP_VSL"]      = df[col_svsl].apply(es_valor_verdadero) if col_svsl else False
+    df["STOP_ROAD"]     = df[col_sroad].apply(es_valor_verdadero) if col_sroad else False
 
     # ── Consistencia T-State vs O/B Dclrd Mode (nunca bloquea) ───
     for _, row in df.iterrows():
@@ -165,6 +170,21 @@ def procesar_archivo_n4(df_raw):
                 f"Contenedor {row['UNIT_NBR']}: Yard - Vessel: un contenedor en "
                 f"patio de transferencia no puede tener modalidad de salida buque, "
                 f"favor revisar"
+            )
+
+    # ── Bloqueos Stop-Vsl / Stop-Road vs T-State (nunca bloquea) ─
+    for _, row in df.iterrows():
+        t_state = row["T_STATE"]
+        if t_state == T_STATE_YARD and row["STOP_ROAD"]:
+            alertas.append(
+                f"Contenedor {row['UNIT_NBR']}: Se detectó que el contenedor en "
+                f"patio tiene bloqueo modalidad de salida camión, favor validar"
+            )
+        if t_state == T_STATE_INBOUND and row["STOP_VSL"]:
+            alertas.append(
+                f"Contenedor {row['UNIT_NBR']}: Se detectó que el contenedor "
+                f"pendiente de ingresar tiene bloqueo modalidad de salida buque, "
+                f"favor validar"
             )
 
     df = df[["UNIT_NBR", "LINE_OP", "LINE_OP_NORM", "TYPE_ARCH_ISO", "T_STATE", "OB_DCLRD_MODE"]]

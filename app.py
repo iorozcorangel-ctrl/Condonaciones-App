@@ -126,8 +126,9 @@ from app.database import (login_usuario, obtener_usuarios, crear_usuario,
                            crear_transferencias_notificacion,
                            obtener_transferencias_notificaciones_pendientes,
                            marcar_transferencias_notificaciones_vistas,
-                           registrar_transferencia, obtener_transferencias_casos,
-                           obtener_transferencias_detalle, folio_transferencia_existe)
+                           registrar_transferencia_auto,
+                           obtener_transferencias_casos,
+                           obtener_transferencias_detalle)
 from app.transferencias import procesar_transferencias
 from app.transferencias_reporte import generar_documento_transferencias
 from app.transferencias_config import (normalizar_texto as normalizar_texto_transferencias,
@@ -2423,22 +2424,17 @@ with nav[IDX_TRANSFEREN]:
 
     # ── Sub-pestaña: Generar Transferencia ───────────────────────
     # Todo se agrupa en un st.form para que Streamlit NO recargue la
-    # página (efecto gris de "cargando") mientras se llenan folio,
-    # responsable y se suben los archivos — solo se recarga una vez,
-    # al darle clic a "Procesar". Por eso el botón ya no se puede
-    # deshabilitar dinámicamente: si falta algo, se avisa con un
-    # mensaje de error después de darle clic.
+    # página (efecto gris de "cargando") mientras se suben los archivos —
+    # solo se recarga una vez, al darle clic a "Procesar". Por eso el
+    # botón ya no se puede deshabilitar dinámicamente: si falta algo, se
+    # avisa con un mensaje de error después de darle clic.
+    # Folio y Responsable ya NO se capturan a mano: el folio se genera
+    # solo (incremental y único) y el responsable se toma del usuario que
+    # tiene la sesión iniciada.
     with sub_nav_t[0]:
+        st.caption(f"👤 Responsable: **{usuario['nombre_completo']}** "
+                   f"(se toma automáticamente de tu sesión).")
         with st.form("form_generar_transferencia", clear_on_submit=False):
-            colf1, colf2 = st.columns(2)
-            with colf1:
-                folio_input = st.text_input(
-                    "Folio", value=st.session_state["trans_folio"], key="trans_folio_input")
-            with colf2:
-                responsable_input = st.text_input(
-                    "Responsable (informativo)", value=st.session_state["trans_responsable"],
-                    key="trans_resp_input")
-
             st.markdown("<div class='sec-hdr'>Archivos de Entrada</div>", unsafe_allow_html=True)
             ukr = st.session_state["trans_uploader_key_rec"]
             ukn = st.session_state["trans_uploader_key_n4"]
@@ -2461,21 +2457,13 @@ with nav[IDX_TRANSFEREN]:
                     "estar en la fila 5 del Excel."
                 )
 
-            st.caption("Captura el folio, sube ambos archivos y dale clic a Procesar. "
-                       "Si falta algo, te lo indicamos aquí mismo.")
+            st.caption("Sube ambos archivos y dale clic a Procesar. "
+                       "Si falta alguno, te lo indicamos aquí mismo.")
             submitted_t = st.form_submit_button("⚙️ Procesar", type="primary")
 
-        st.session_state["trans_folio"] = folio_input
-        st.session_state["trans_responsable"] = responsable_input
-
         if submitted_t:
-            folio_limpio = folio_input.strip()
-            if not folio_limpio:
-                st.error("Captura el folio antes de procesar.")
-            elif f_recinto is None or f_n4 is None:
+            if f_recinto is None or f_n4 is None:
                 st.error("Sube ambos archivos (Archivo Recinto y Archivo Sistema N4) antes de procesar.")
-            elif not st.session_state["trans_guardado"] and folio_transferencia_existe(folio_limpio):
-                st.error("Ese folio ya se usó en otro caso registrado. Captura uno distinto.")
             else:
                 _lectura_ok = True
                 try:
@@ -2570,22 +2558,31 @@ with nav[IDX_TRANSFEREN]:
                     st.session_state["trans_reporte_bytes"] = _buf_t.getvalue()
 
                 if not st.session_state["trans_guardado"]:
-                    ok_g, _ = registrar_transferencia(
-                        st.session_state["trans_folio"].strip(),
-                        st.session_state["trans_responsable"].strip(),
-                        usuario["id"], usuario["nombre_completo"], filas_t,
+                    # Folio automático, único e incremental — responsable
+                    # tomado del usuario con la sesión iniciada. Ninguno
+                    # de los dos se captura a mano.
+                    ok_g, resultado_g, folio_g = registrar_transferencia_auto(
+                        usuario["nombre_completo"], usuario["id"],
+                        usuario["nombre_completo"], filas_t,
                     )
                     if ok_g:
+                        st.session_state["trans_folio"] = folio_g
+                        st.session_state["trans_responsable"] = usuario["nombre_completo"]
                         st.session_state["trans_guardado"] = True
                         invalidar_cache_transferencias()
+                    else:
+                        st.error(f"No se pudo registrar el caso: {resultado_g}")
 
-                st.download_button(
-                    "⬇️ Descargar documento final (Excel)",
-                    data=st.session_state["trans_reporte_bytes"],
-                    file_name=f"Transferencia_{st.session_state['trans_folio'].strip()}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="trans_btn_descargar",
-                )
+                if st.session_state["trans_guardado"]:
+                    st.info(f"📋 Folio asignado: **{st.session_state['trans_folio']}** — "
+                            f"Responsable: **{st.session_state['trans_responsable']}**")
+                    st.download_button(
+                        "⬇️ Descargar documento final (Excel)",
+                        data=st.session_state["trans_reporte_bytes"],
+                        file_name=f"Transferencia_{st.session_state['trans_folio']}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="trans_btn_descargar",
+                    )
 
                 if st.button("🆕 Nuevo caso", key="trans_btn_nuevo"):
                     st.session_state["trans_folio"]         = ""

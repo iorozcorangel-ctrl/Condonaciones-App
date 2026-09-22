@@ -1249,3 +1249,47 @@ def folio_transferencia_existe(folio: str):
         return False
     except Exception:
         return False
+
+
+def siguiente_folio_transferencia():
+    """
+    Calcula el siguiente folio de Transferencias: toma el folio numérico
+    más alto ya guardado en transferencias_casos y regresa el siguiente,
+    como texto de 5 dígitos con ceros a la izquierda (ej. '00001',
+    '00002', ...). Folios antiguos que no sean puramente numéricos (si se
+    llegó a capturar alguno a mano antes de este cambio) se ignoran para
+    este cálculo, no truenan el conteo.
+    """
+    try:
+        db = get_client()
+        res = db.table("transferencias_casos").select("folio").execute()
+        maximo = 0
+        for c in (res.data or []):
+            folio = str(c.get("folio", "")).strip()
+            if folio.isdigit():
+                maximo = max(maximo, int(folio))
+        return f"{maximo + 1:05d}"
+    except Exception:
+        return "00001"
+
+
+def registrar_transferencia_auto(responsable: str, usuario_id: str,
+                                  usuario_nombre: str, filas: list, intentos: int = 5):
+    """
+    Genera un folio automático, único e incremental (siguiente_folio_transferencia)
+    y registra el caso con él. Si por una coincidencia muy rara el folio ya
+    existe al momento de guardar (dos personas procesando casi al mismo
+    tiempo), se vuelve a generar el siguiente y se reintenta.
+
+    Regresa (True, caso_id, folio) o (False, error, None).
+    """
+    for _ in range(intentos):
+        folio = siguiente_folio_transferencia()
+        if folio_transferencia_existe(folio):
+            continue
+        ok, resultado = registrar_transferencia(folio, responsable, usuario_id,
+                                                  usuario_nombre, filas)
+        if ok:
+            return True, resultado, folio
+        return False, resultado, None
+    return False, "No se pudo generar un folio único después de varios intentos.", None

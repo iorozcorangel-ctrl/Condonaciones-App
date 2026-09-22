@@ -40,6 +40,21 @@ def normalizar_texto(valor):
     return s
 
 
+def es_valor_verdadero(valor):
+    """
+    Interpreta un valor de Excel como booleano, sin importar cómo venga
+    capturado: True/False de Python, 1/0, o texto "TRUE"/"FALSE"
+    (también "VERDADERO"/"FALSO", "SI"/"SÍ"), sin importar mayúsculas,
+    minúsculas o espacios. Cualquier otra cosa (vacío, "N/A", etc.) se
+    interpreta como False.
+    """
+    if isinstance(valor, bool):
+        return valor
+    if isinstance(valor, (int, float)):
+        return valor == 1
+    return normalizar_texto(valor) in ("TRUE", "VERDADERO", "1", "SI", "SÍ")
+
+
 def encontrar_columna(columnas_df, alias_lista):
     """
     Busca en las columnas reales de un DataFrame (columnas_df) alguna que
@@ -97,6 +112,8 @@ COL_N4_ALIAS = {
     "t_state":       ["T-State", "TState", "T State"],
     "line_op":       ["Line Op", "LineOp"],
     "type_arch_iso": ["Type Arch ISO", "TypeArchISO", "Type Arch"],
+    "stop_vsl":      ["Stop-Vsl", "Stop Vsl", "StopVsl", "Stop-VSL"],
+    "stop_road":     ["Stop-Road", "Stop Road", "StopRoad", "Stop-ROAD"],
 }
 
 # Valores válidos (normalizados)

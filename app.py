@@ -2501,6 +2501,9 @@ with nav[IDX_TRANSFEREN]:
                 st.info("Relaciona cada nombre con un código ya existente para continuar. "
                         "La fila se procesa de inmediato; el nombre queda pendiente de "
                         "aprobación por un Admin.")
+                st.caption("⚠️ Si alguno de estos nombres es un error de captura o una prueba "
+                           "(no es un recinto real), no lo relaciones con un código — mejor "
+                           "corrige el Archivo Recinto y vuelve a subirlo con el botón de abajo.")
                 catalogo_r_sel = obtener_transferencias_recintos()
                 codigos_unicos = sorted({r["codigo"] for r in catalogo_r_sel})
                 for nombre_nr in resultado_t["recintos_no_reconocidos"]:
@@ -2512,7 +2515,15 @@ with nav[IDX_TRANSFEREN]:
                                      key=f"trans_recinto_sel_{nombre_nr}",
                                      label_visibility="collapsed")
 
-                if st.button("💾 Guardar relaciones y reprocesar", key="trans_btn_guardar_rel"):
+                bc1, bc2 = st.columns(2)
+                with bc1:
+                    guardar_rel = st.button("💾 Guardar relaciones y reprocesar",
+                                             key="trans_btn_guardar_rel", type="primary")
+                with bc2:
+                    corregir_arch = st.button("🔙 Corregir archivo (cancelar y volver a subir)",
+                                               key="trans_btn_corregir_recinto")
+
+                if guardar_rel:
                     for nombre_nr in resultado_t["recintos_no_reconocidos"]:
                         cod_sel = st.session_state.get(f"trans_recinto_sel_{nombre_nr}")
                         if cod_sel is None:
@@ -2536,6 +2547,19 @@ with nav[IDX_TRANSFEREN]:
                         catalogo_r2, catalogo_n2,
                         overrides_recinto=st.session_state["trans_overrides"],
                     )
+                    st.rerun()
+
+                if corregir_arch:
+                    # Cancela este caso sin relacionar ningún nombre y regresa a la
+                    # pantalla de subida, para corregir el archivo de origen.
+                    st.session_state["trans_df_recinto"]    = None
+                    st.session_state["trans_df_n4"]         = None
+                    st.session_state["trans_resultado"]     = None
+                    st.session_state["trans_overrides"]     = {}
+                    st.session_state["trans_reporte_bytes"] = None
+                    st.session_state["trans_guardado"]      = False
+                    st.session_state["trans_uploader_key_rec"] += 1
+                    st.session_state["trans_uploader_key_n4"]  += 1
                     st.rerun()
 
             else:

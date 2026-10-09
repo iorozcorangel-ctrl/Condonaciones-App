@@ -1320,15 +1320,13 @@ with nav[0]:
                     (n for n in obtener_nc_asignaciones()
                      if n["nc_externo"].strip().upper() == nc_norm), None
                 )
+                # Análisis ya NO crea NC: solo rellena datos si la NC existe.
+                # Si no existe, el análisis continúa y se avisa (según rol).
                 if nc_existente:
                     actualizar_herencia_analisis(nc_existente["id"], cliente_val, factura_val)
+                    st.session_state["nc_no_registrada"] = False
                 else:
-                    ok_h, id_h = crear_nc_asignacion(
-                        nc, usuario["id"], usuario["nombre_completo"],
-                        fecha_sol.isoformat(), usuario["id"]
-                    )
-                    if ok_h:
-                        actualizar_herencia_analisis(id_h, cliente_val, factura_val)
+                    st.session_state["nc_no_registrada"] = True
                 invalidar_cache_nc()
 
             excel_bytes = st.session_state["reporte_bytes"]
@@ -1338,6 +1336,14 @@ with nav[0]:
                 st.session_state["nc_registrada"] = False
 
             st.success("¡Reporte generado exitosamente!")
+            if st.session_state.get("nc_no_registrada"):
+                if es_admin:
+                    st.warning(f"⚠️ La NC **{nc}** no está registrada en el sistema. El análisis "
+                               "continuó normalmente, pero no se rellenaron cliente/factura. "
+                               "Puedes darla de alta en **Gestión NC → Asignar NC**.")
+                else:
+                    st.warning(f"⚠️ La NC **{nc}** no está registrada en el sistema. El análisis "
+                               "continuó normalmente; avisa al administrador para que la dé de alta.")
 
             def on_download():
                 if not st.session_state["nc_registrada"]:
@@ -1955,10 +1961,8 @@ with nav[IDX_GESTION]:
                             )
                             if ya_existe:
                                 st.error(
-                                    f"⚠️ Ya existe una NC con el número **{nc_ext}** "
-                                    f"(asignada a **{ya_existe['responsable_nombre']}**, "
-                                    f"estatus: {ya_existe['estatus']}). Usa esa NC existente "
-                                    f"en la lista de abajo en lugar de crear una duplicada."
+                                    f"⚠️ La NC ya existe como: **{ya_existe['nc_externo']}** — "
+                                    f"creada el {fecha_hora_mx(ya_existe.get('fecha_creacion'))}."
                                 )
                             else:
                                 resp_obj = next((u for u in usuarios_lista

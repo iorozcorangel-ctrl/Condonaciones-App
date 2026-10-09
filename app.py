@@ -406,13 +406,23 @@ else:
     # padding-top + margin-top negativo = zona sensible ampliada hacia arriba
     _css_cinta = f"""
     {_NAV_SEL}{{width:fit-content;max-width:100%;align-items:center;
-               padding-top:20px;margin-top:-20px;}}
-    {_NAV_SEL} [role="tab"][aria-selected="false"]{{display:none !important;}}
-    {_NAV_SEL}:hover [role="tab"][aria-selected="false"]{{display:flex !important;}}
+               padding-top:20px;margin-top:-20px;column-gap:0 !important;gap:0 !important;}}
+    /* Pestañas ocultas: colapsadas (no display:none) para poder animar la apertura */
+    {_NAV_SEL} [role="tab"][aria-selected="false"]{{
+        max-width:0;opacity:0;overflow:hidden;white-space:nowrap;
+        padding-left:0 !important;padding-right:0 !important;margin:0 !important;
+        pointer-events:none;border-width:0;
+        transition:max-width .28s cubic-bezier(.4,0,.2,1), opacity .2s ease .04s,
+                   padding .28s cubic-bezier(.4,0,.2,1);}}
+    {_NAV_SEL}:hover [role="tab"][aria-selected="false"]{{
+        max-width:260px;opacity:1;pointer-events:auto;
+        padding-left:.75rem !important;padding-right:.75rem !important;}}
     {_NAV_SEL} [role="tab"][aria-selected="true"]{{font-size:1.35rem;font-weight:700;}}
     {_NAV_SEL} [role="tab"][aria-selected="true"] p{{font-size:1.35rem !important;font-weight:700 !important;}}
-    {_NAV_SEL} [role="tab"][aria-selected="true"]::after{{content:"→";font-size:1.4rem;opacity:.55;padding-left:14px;}}
-    {_NAV_SEL}:hover [role="tab"][aria-selected="true"]::after{{display:none;}}
+    {_NAV_SEL} [role="tab"][aria-selected="true"]::after{{content:"→";font-size:1.4rem;
+        opacity:.55;padding-left:14px;display:inline-block;overflow:hidden;max-width:40px;
+        transition:opacity .15s ease, max-width .28s cubic-bezier(.4,0,.2,1), padding .28s ease;}}
+    {_NAV_SEL}:hover [role="tab"][aria-selected="true"]::after{{opacity:0;max-width:0;padding-left:0;}}
     """
 st.markdown(f"<style>{_css_chk}{_css_cinta}</style>", unsafe_allow_html=True)
 with st.container(key="nav_main"):

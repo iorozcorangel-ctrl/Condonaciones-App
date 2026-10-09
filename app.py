@@ -96,6 +96,7 @@ from app.validaciones import (validar_archivos, aplicar_regla1, aplicar_regla2,
                                validar_formato_nc, normalizar_numero_nc)
 from app.reporte import generar_reporte
 from app.database import (login_usuario, obtener_usuarios, crear_usuario,
+                           obtener_inicio_sesion,
                            cambiar_password, toggle_usuario, eliminar_usuario,
                            registrar_nc, verificar_duplicados,
                            obtener_historial, obtener_detalle_nc, eliminar_nc,
@@ -143,6 +144,8 @@ st.set_page_config(
 
 st.markdown("""
 <style>
+.login-stamp{position:fixed;top:14px;left:18px;z-index:999999;pointer-events:none;
+  font-size:12px;color:inherit;opacity:.5;letter-spacing:.2px;}
 .topbar{background:#E65100;padding:16px 24px;border-radius:8px;margin-bottom:20px;}
 .topbar h1{color:white;font-size:22px;margin:0;font-weight:600;}
 .topbar p{color:#FFCC80;font-size:13px;margin:4px 0 0 0;}
@@ -258,6 +261,7 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
                     if usuario:
                         st.session_state["autenticado"]   = True
                         st.session_state["usuario"]       = usuario
+                        st.session_state["login_dt"]      = datetime.now(ZONA_MX)
                         # Crear sesión en BD (expira a los 5 días) y
                         # guardar el token en la URL para persistencia
                         from app.database import crear_sesion as _cs
@@ -335,6 +339,9 @@ with col_user:
       <span class='{rol_badge}'>{rol_label}</span>
     </div>
     """, unsafe_allow_html=True)
+    st.checkbox("📌 Fijar menú", key="nav_fijado",
+                help="Marcado: el menú de módulos se muestra completo. "
+                     "Desmarcado: solo se ve el módulo actual y se abre al pasar el mouse.")
     if st.button("🚪 Salir", width='stretch'):
         try:
             from app.database import eliminar_sesion as _es
@@ -345,6 +352,21 @@ with col_user:
         for k in list(st.session_state.keys()):
             del st.session_state[k]
         st.rerun()
+
+# ── Sello de fecha/hora de ingreso (arriba a la izquierda, discreto) ──
+if "login_txt" not in st.session_state:
+    _dt = obtener_inicio_sesion(st.session_state.get("session_token", "")) \
+          or st.session_state.get("login_dt")
+    _txt = ""
+    if _dt:
+        _dt = _dt.astimezone(ZONA_MX)
+        _dias = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+        _txt = f"🕒 Ingreso: {_dias[_dt.weekday()]} {_dt.strftime('%d/%m/%Y · %H:%M')}"
+    st.session_state["login_txt"] = _txt
+if st.session_state["login_txt"]:
+    st.markdown(
+        f"<div class='login-stamp'>{st.session_state['login_txt']}</div>",
+        unsafe_allow_html=True)
 
 # ── Navegación ──────────────────────────────────────────────────
 tabs_disponibles = ["📊 Análisis", "📋 Historial NC", "📖 Reglas de Aplicación",
@@ -371,7 +393,25 @@ if not st.session_state.get("notif_mostrado", False):
         marcar_transferencias_notificaciones_vistas(usuario["id"])
     st.session_state["notif_mostrado"] = True
 
-nav = st.tabs(tabs_disponibles)
+# Estilo "cinta": solo se ve el módulo actual; al pasar el mouse se abren todos.
+# El bloque <style> se renderiza siempre (vacío si el menú está fijado) para
+# no cambiar la posición de los elementos entre reruns.
+_NAV_SEL = '.st-key-nav_main [role="tablist"]:not([role="tabpanel"] [role="tablist"])'
+if st.session_state.get("nav_fijado", False):
+    _css_cinta = ""
+else:
+    _css_cinta = f"""
+    {_NAV_SEL}{{width:fit-content;max-width:100%;align-items:center;}}
+    {_NAV_SEL} [role="tab"][aria-selected="false"]{{display:none !important;}}
+    {_NAV_SEL}:hover [role="tab"][aria-selected="false"]{{display:flex !important;}}
+    {_NAV_SEL} [role="tab"][aria-selected="true"]{{font-size:1.35rem;font-weight:700;}}
+    {_NAV_SEL} [role="tab"][aria-selected="true"] p{{font-size:1.35rem !important;font-weight:700 !important;}}
+    {_NAV_SEL} [role="tab"][aria-selected="true"]::after{{content:"→";font-size:1.4rem;opacity:.55;padding-left:14px;}}
+    {_NAV_SEL}:hover [role="tab"][aria-selected="true"]::after{{display:none;}}
+    """
+st.markdown(f"<style>{_css_cinta}</style>", unsafe_allow_html=True)
+with st.container(key="nav_main"):
+    nav = st.tabs(tabs_disponibles)
 
 # ════════════════════════════════════════════════════════════════
 #   PESTAÑA 1 — ANÁLISIS

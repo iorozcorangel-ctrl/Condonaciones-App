@@ -1352,17 +1352,23 @@ with nav[0]:
             elif st.session_state.get("nc_registrada"):
                 st.caption("✅ NC guardada en Historial NC.")
 
-            def on_download():
+            # IMPORTANTE: los valores se "congelan" como argumentos por defecto.
+            # Streamlit ejecuta este callback al INICIO del siguiente rerun, cuando
+            # variables globales como `nc` ya fueron reasignadas por otros bucles
+            # del script (p. ej. `for nc in todas:` en Gestión NC), lo que guardaba
+            # un diccionario completo como número de NC en el Historial.
+            def on_download(nc_c=str(nc), df_c=df_bv, montos_c=montos,
+                            uid_c=usuario["id"], unombre_c=nombre_user):
                 if not st.session_state["nc_registrada"]:
-                    contenedores_list = df_bv[COL_BI["contenedor"]].tolist()
-                    facturas_list = (df_bv[COL_BI["no_factura"]].tolist()
-                                     if COL_BI["no_factura"] in df_bv.columns else [])
+                    contenedores_list = df_c[COL_BI["contenedor"]].tolist()
+                    facturas_list = (df_c[COL_BI["no_factura"]].tolist()
+                                     if COL_BI["no_factura"] in df_c.columns else [])
                     monto_total = sum(m.get("monto_total", 0)
-                                      for m in montos.values())
+                                      for m in montos_c.values())
                     ok_reg, msg_reg = registrar_nc(
-                        numero_nc=nc,
-                        usuario_id=usuario["id"],
-                        usuario_nombre=nombre_user,
+                        numero_nc=nc_c,
+                        usuario_id=uid_c,
+                        usuario_nombre=unombre_c,
                         contenedores=contenedores_list,
                         facturas=facturas_list,
                         monto_total=monto_total

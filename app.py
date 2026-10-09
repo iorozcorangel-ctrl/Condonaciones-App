@@ -92,7 +92,8 @@ from app.config import COL_BI, COL_TAB
 from app.calendario import get_festivos_oficiales
 from app.validaciones import (validar_archivos, aplicar_regla1, aplicar_regla2,
                                calcular_desfases, calcular_montos,
-                               normalizar_contenedor, to_date)
+                               normalizar_contenedor, to_date,
+                               validar_formato_nc, normalizar_numero_nc)
 from app.reporte import generar_reporte
 from app.database import (login_usuario, obtener_usuarios, crear_usuario,
                            cambiar_password, toggle_usuario, eliminar_usuario,
@@ -503,7 +504,11 @@ with nav[0]:
                                        placeholder="Ej: NC-2585",
                                        disabled=bloqueado,
                                        key=f"nc_manual_{ikey}")
+            dc1.caption("Formato obligatorio: **NC-** y el consecutivo de 4 o 5 "
+                        "dígitos (ej. NC-2585, NC-10000).")
+            nc_manual_activa = True
         else:
+            nc_manual_activa = False
             nc_asignadas_disp = _cached_nc_asignaciones()
             # Deduplicar nombres conservando orden
             nombres_nc_asig = []
@@ -709,6 +714,14 @@ with nav[0]:
             if not nc_input.strip():
                 st.warning("Ingrese el número de nota de crédito")
                 st.stop()
+
+            # Captura manual: el número debe ser NC-#### (4 o 5 dígitos).
+            if nc_manual_activa:
+                if not validar_formato_nc(nc_input):
+                    st.error("Formato de NC inválido. Debe ser **NC-** seguido del "
+                             "consecutivo de 4 o 5 dígitos (ej. NC-2585 o NC-10000).")
+                    st.stop()
+                nc_input = normalizar_numero_nc(nc_input)
 
             perfil  = st.session_state["perfiles"][st.session_state["perfil_idx"]]
             alertas = []

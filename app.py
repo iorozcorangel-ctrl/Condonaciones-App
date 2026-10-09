@@ -339,9 +339,6 @@ with col_user:
       <span class='{rol_badge}'>{rol_label}</span>
     </div>
     """, unsafe_allow_html=True)
-    st.checkbox("📌 Fijar menú", key="nav_fijado",
-                help="Marcado: el menú de módulos se muestra completo. "
-                     "Desmarcado: solo se ve el módulo actual y se abre al pasar el mouse.")
     if st.button("🚪 Salir", width='stretch'):
         try:
             from app.database import eliminar_sesion as _es
@@ -397,11 +394,19 @@ if not st.session_state.get("notif_mostrado", False):
 # El bloque <style> se renderiza siempre (vacío si el menú está fijado) para
 # no cambiar la posición de los elementos entre reruns.
 _NAV_SEL = '.st-key-nav_main [role="tablist"]:not([role="tabpanel"] [role="tablist"])'
+# Checkbox "Fijar menú": pegado a la derecha, a la altura de la cinta
+_css_chk = """
+    .st-key-nav_main{position:relative;}
+    .st-key-nav_fijado{position:absolute;left:0;top:-46px;z-index:5;width:auto !important;}
+    .st-key-nav_fijado label p{font-size:1.05rem !important;font-weight:600;}
+"""
 if st.session_state.get("nav_fijado", False):
     _css_cinta = ""
 else:
+    # padding-top + margin-top negativo = zona sensible ampliada hacia arriba
     _css_cinta = f"""
-    {_NAV_SEL}{{width:fit-content;max-width:100%;align-items:center;}}
+    {_NAV_SEL}{{width:fit-content;max-width:100%;align-items:center;
+               padding-top:20px;margin-top:-20px;}}
     {_NAV_SEL} [role="tab"][aria-selected="false"]{{display:none !important;}}
     {_NAV_SEL}:hover [role="tab"][aria-selected="false"]{{display:flex !important;}}
     {_NAV_SEL} [role="tab"][aria-selected="true"]{{font-size:1.35rem;font-weight:700;}}
@@ -409,8 +414,11 @@ else:
     {_NAV_SEL} [role="tab"][aria-selected="true"]::after{{content:"→";font-size:1.4rem;opacity:.55;padding-left:14px;}}
     {_NAV_SEL}:hover [role="tab"][aria-selected="true"]::after{{display:none;}}
     """
-st.markdown(f"<style>{_css_cinta}</style>", unsafe_allow_html=True)
+st.markdown(f"<style>{_css_chk}{_css_cinta}</style>", unsafe_allow_html=True)
 with st.container(key="nav_main"):
+    st.checkbox("📌 Fijar menú", key="nav_fijado",
+                help="Marcado: el menú de módulos se muestra completo. "
+                     "Desmarcado: solo se ve el módulo actual y se abre al pasar el mouse.")
     nav = st.tabs(tabs_disponibles)
 
 # ════════════════════════════════════════════════════════════════
@@ -516,7 +524,7 @@ with nav[0]:
         df_txt  = "🚫 No aplica" if perfil_activo.get("na_ffcc", False) else f"{perfil_activo.get('dias_ferromex', 3)} días naturales"
         dc_txt  = "🚫 No aplica" if perfil_activo.get("na_carretero", False) else f"{perfil_activo.get('dias_carretero', 2)} días hábiles"
         st.markdown(f"""
-        <div style='background:#FFF3E0;border-left:4px solid #E65100;padding:10px 14px;
+        <div style='background:#FFF3E0;color:#3E2723;border-left:4px solid #E65100;padding:10px 14px;
                     border-radius:4px;font-size:13px;color:#555;margin-bottom:8px;'>
         <b>Configuración del perfil activo:</b><br>
         📅 <b>Regla 1</b> — Validación 30 días naturales: {r1_txt}<br>
@@ -1641,7 +1649,7 @@ with nav[tab_reglas_idx]:
                 unsafe_allow_html=True)
 
     st.markdown("""
-    <div style='background:#FFF3E0;border-left:4px solid #E65100;padding:12px 16px;
+    <div style='background:#FFF3E0;color:#3E2723;border-left:4px solid #E65100;padding:12px 16px;
                 border-radius:6px;margin-bottom:16px;font-size:14px;'>
     ℹ️ Esta sección es <b>informativa</b>. Describe cómo el sistema calcula las condonaciones
     y qué datos se requieren de los archivos Excel para que el análisis sea correcto.

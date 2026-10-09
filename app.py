@@ -1345,6 +1345,13 @@ with nav[0]:
                     st.warning(f"⚠️ La NC **{nc}** no está registrada en el sistema. El análisis "
                                "continuó normalmente; avisa al administrador para que la dé de alta.")
 
+            if st.session_state.get("nc_registro_error"):
+                st.error("❌ El reporte se descargó, pero la NC **no se guardó en Historial NC**. "
+                         "Vuelve a pulsar «Descargar Reporte Excel» para reintentar. "
+                         f"Detalle técnico: {st.session_state['nc_registro_error']}")
+            elif st.session_state.get("nc_registrada"):
+                st.caption("✅ NC guardada en Historial NC.")
+
             def on_download():
                 if not st.session_state["nc_registrada"]:
                     contenedores_list = df_bv[COL_BI["contenedor"]].tolist()
@@ -1352,7 +1359,7 @@ with nav[0]:
                                      if COL_BI["no_factura"] in df_bv.columns else [])
                     monto_total = sum(m.get("monto_total", 0)
                                       for m in montos.values())
-                    registrar_nc(
+                    ok_reg, msg_reg = registrar_nc(
                         numero_nc=nc,
                         usuario_id=usuario["id"],
                         usuario_nombre=nombre_user,
@@ -1360,7 +1367,12 @@ with nav[0]:
                         facturas=facturas_list,
                         monto_total=monto_total
                     )
-                    st.session_state["nc_registrada"] = True
+                    if ok_reg:
+                        st.session_state["nc_registrada"] = True
+                        st.session_state["nc_registro_error"] = ""
+                    else:
+                        # Antes el error se ignoraba en silencio y parecía guardado
+                        st.session_state["nc_registro_error"] = str(msg_reg)
 
             st.download_button(
                 label="⬇️ Descargar Reporte Excel",
@@ -1383,6 +1395,7 @@ with nav[0]:
                 st.session_state["paso"]               = "inicio"
                 st.session_state["uploader_key"]      += 1
                 st.session_state["nc_registrada"]      = False
+                st.session_state["nc_registro_error"]  = ""
                 st.session_state["reporte_bytes"]      = None
                 st.session_state["cond_manual"]        = False
                 st.session_state["dias_manual_previo"] = 0

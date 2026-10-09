@@ -52,6 +52,15 @@ def _cached_transferencias_casos():
     return obtener_transferencias_casos()
 
 
+@st.cache_data(ttl=20, show_spinner=False)
+def _cached_dias_especiales():
+    return obtener_dias_especiales_db()
+
+@st.cache_data(ttl=10, show_spinner=False)
+def _cached_solicitudes_perfil_pendientes():
+    return obtener_solicitudes_perfil(estado="pendiente")
+
+
 def invalidar_cache_nc():
     """Llamar después de crear/editar/eliminar una NC para refrescar la vista al instante."""
     _cached_nc_asignaciones.clear()
@@ -89,7 +98,7 @@ def fecha_hora_mx(iso_str) -> str:
 
 from app.config import COL_BI, COL_TAB
 # Perfiles ahora vienen de Supabase via database.py
-from app.calendario import get_festivos_oficiales
+from app.calendario import get_festivos_oficiales, nombre_festivo
 from app.validaciones import (validar_archivos, aplicar_regla1, aplicar_regla2,
                                calcular_desfases, calcular_montos,
                                normalizar_contenedor, to_date,
@@ -97,6 +106,12 @@ from app.validaciones import (validar_archivos, aplicar_regla1, aplicar_regla2,
 from app.reporte import generar_reporte
 from app.database import (login_usuario, obtener_usuarios, crear_usuario,
                            obtener_inicio_sesion,
+                           crear_solicitud_perfil, obtener_solicitudes_perfil,
+                           resolver_solicitud_perfil,
+                           obtener_solicitudes_perfil_sin_notificar,
+                           marcar_solicitudes_perfil_notificadas,
+                           obtener_dias_especiales_db, agregar_dia_especial_db,
+                           quitar_dia_especial_db, limpiar_dias_especiales_db,
                            cambiar_password, toggle_usuario, eliminar_usuario,
                            registrar_nc, verificar_duplicados,
                            obtener_historial, obtener_detalle_nc, eliminar_nc,
@@ -388,6 +403,22 @@ if not st.session_state.get("notif_mostrado", False):
         for n in notifs_t:
             st.toast(f"🔔 {n['mensaje']}", icon="🔔")
         marcar_transferencias_notificaciones_vistas(usuario["id"])
+    # Solicitudes de perfil: admin ve cuántas hay pendientes; el usuario
+    # se entera del resultado (aprobada / rechazada con motivo)
+    if es_admin:
+        _pend = obtener_solicitudes_perfil(estado="pendiente")
+        if _pend:
+            st.toast(f"🔔 Hay {len(_pend)} solicitud(es) de perfil pendiente(s) "
+                     "por revisar (módulo Análisis).", icon="🔔")
+    else:
+        _resueltas = obtener_solicitudes_perfil_sin_notificar(usuario["id"])
+        for _r in _resueltas:
+            if _r["estado"] == "aprobada":
+                st.toast(f"✅ Tu solicitud del perfil «{_r['nombre']}» fue AUTORIZADA.", icon="✅")
+            else:
+                st.toast(f"❌ Tu solicitud del perfil «{_r['nombre']}» fue RECHAZADA. "
+                         f"Motivo: {_r.get('motivo_rechazo') or 'sin motivo'}", icon="❌")
+        marcar_solicitudes_perfil_notificadas([r["id"] for r in _resueltas])
     st.session_state["notif_mostrado"] = True
 
 # Estilo "cinta": solo se ve el módulo actual; al pasar el mouse se abren todos.
@@ -435,6 +466,13 @@ with st.container(key="nav_main"):
 #   PESTAÑA 1 — ANÁLISIS
 # ════════════════════════════════════════════════════════════════
 with nav[0]:
+    # Días especiales GLOBALES (los pone/quita solo el admin; valen para todos)
+    _dias_db = _cached_dias_especiales()
+    st.session_state["dias_comentarios"] = _dias_db
+    _tmin_an = st.session_state.get("_timein_min_analisis") \
+        if st.session_state["paso"] != "inicio" else None
+    st.session_state["dias_especiales"] = {d for d in _dias_db
+                                           if not _tmin_an or d >= _tmin_an}
     col_izq, col_der = st.columns([3, 2])
     bloqueado = st.session_state["paso"] != "inicio"
 
@@ -445,6 +483,57 @@ with nav[0]:
         perfiles = st.session_state["perfiles"]
         nombres  = [p["nombre"] for p in perfiles]
         idx      = min(st.session_state["perfil_idx"], len(perfiles)-1)
+
+        # ── Solicitudes de perfil: admin resuelve / usuario consulta las suyas ──
+        if es_admin:
+            _pend = _cached_solicitudes_perfil_pendientes()
+            if _pend:
+                with st.expander(f"🔔 Solicitudes de perfil pendientes ({len(_pend)})",
+                                 expanded=True):
+                    for _sol in _pend:
+                        _reglas = (f"R1 30d: {'sí' if _sol.get('regla1_activa') else 'no'} · "
+                                   f"R2 4d: {'sí' if _sol.get('regla2_activa') else 'no'} · "
+                                   f"Previo: {'N/A' if _sol.get('na_previo') else str(_sol.get('dias_previo'))+' d'} · "
+                                   f"FFCC: {'N/A' if _sol.get('na_ffcc') else str(_sol.get('dias_ferromex'))+' d'} · "
+                                   f"Carretero: {'N/A' if _sol.get('na_carretero') else str(_sol.get('dias_carretero'))+' d'}")
+                        st.markdown(f"**{_sol['nombre']}** — solicitado por "
+                                    f"**{_sol['solicitante_nombre']}** "
+                                    f"({fecha_hora_mx(_sol.get('fecha_creacion'))})")
+                        st.caption(_reglas)
+                        with st.form(f"form_sol_{_sol['id']}"):
+                            _motivo = st.text_input("Motivo de rechazo (obligatorio solo si rechazas)",
+                                                    key=f"mot_sol_{_sol['id']}")
+                            fa, fb = st.columns(2)
+                            _ok_btn = fa.form_submit_button("✅ Aprobar", type="primary",
+                                                            width='stretch')
+                            _no_btn = fb.form_submit_button("❌ Rechazar", width='stretch')
+                        if _ok_btn or _no_btn:
+                            if _no_btn and not _motivo.strip():
+                                st.warning("Escribe el motivo del rechazo.")
+                            else:
+                                _ok_r, _err_r = resolver_solicitud_perfil(
+                                    _sol, aprobar=bool(_ok_btn),
+                                    admin_nombre=usuario["nombre_completo"],
+                                    motivo_rechazo=_motivo.strip())
+                                if _ok_r:
+                                    _cached_solicitudes_perfil_pendientes.clear()
+                                    if _ok_btn:
+                                        # recargar perfiles para que aparezca el nuevo
+                                        st.session_state["perfiles_cargados"] = False
+                                    st.rerun()
+                                else:
+                                    st.error(f"No se pudo resolver la solicitud: {_err_r}")
+                        st.divider()
+        else:
+            _mias = obtener_solicitudes_perfil(solicitante_id=usuario["id"], limite=8)
+            if _mias:
+                _icono = {"pendiente": "⏳", "aprobada": "✅", "rechazada": "❌"}
+                with st.expander(f"📨 Mis solicitudes de perfil ({len(_mias)})"):
+                    for _m in _mias:
+                        _extra = (f" — motivo: {_m.get('motivo_rechazo')}"
+                                  if _m["estado"] == "rechazada" else "")
+                        st.write(f"{_icono.get(_m['estado'], '•')} **{_m['nombre']}** — "
+                                 f"{_m['estado']}{_extra}")
 
         c1, c2, c3, c4 = st.columns([3,1,1,1])
         with c1:
@@ -458,15 +547,20 @@ with nav[0]:
                 if perfil_sel_id:
                     guardar_ultimo_perfil_db(usuario["id"], perfil_sel_id)
         with c2:
-            if st.button("➕ Nuevo", width='stretch', disabled=bloqueado):
+            if st.button("➕ Nuevo" if es_admin else "📨 Solicitar", width='stretch',
+                         disabled=bloqueado,
+                         help=None if es_admin else
+                         "Envía una solicitud de perfil nuevo; el administrador la autoriza o la rechaza."):
                 st.session_state["mostrar_form_perfil"] = "nuevo"
         with c3:
             if st.button("✏️ Editar", width='stretch',
-                         disabled=nuevo_idx==0 or bloqueado):
+                         disabled=nuevo_idx==0 or bloqueado or not es_admin,
+                         help=None if es_admin else "Solo el administrador puede editar perfiles."):
                 st.session_state["mostrar_form_perfil"] = "editar"
         with c4:
             if st.button("🗑️", width='stretch',
-                         disabled=nuevo_idx==0 or bloqueado):
+                         disabled=nuevo_idx==0 or bloqueado or not es_admin,
+                         help=None if es_admin else "Solo el administrador puede eliminar perfiles."):
                 perfil_id = perfiles[nuevo_idx].get("id", "")
                 if perfil_id:
                     eliminar_perfil_db(perfil_id)
@@ -501,8 +595,32 @@ with nav[0]:
                                        p.get("dias_carretero", 2),
                                        disabled=na_c)
                 bg1, bg2 = st.columns(2)
-                if bg1.button("💾 Guardar", width='stretch'):
-                    if nombre_p:
+                if bg1.button("💾 Guardar" if es_admin else "📨 Enviar solicitud",
+                              width='stretch'):
+                    _nombres_ocupados = {n.strip().lower() for n in nombres}
+                    if not es_admin:
+                        _nombres_ocupados |= {x["nombre"].strip().lower()
+                                              for x in _cached_solicitudes_perfil_pendientes()}
+                    if not nombre_p.strip():
+                        st.warning("Escribe un nombre para el perfil.")
+                    elif (modo == "nuevo" or not es_admin) and \
+                            nombre_p.strip().lower() in _nombres_ocupados:
+                        st.warning("Ya existe un perfil (o solicitud pendiente) con ese nombre.")
+                    elif not es_admin:
+                        # Usuario: no crea el perfil, envía solicitud al administrador
+                        ok_s, res_s = crear_solicitud_perfil(
+                            usuario["id"], usuario["nombre_completo"],
+                            {"nombre": nombre_p.strip(), "regla1_activa": r1, "regla2_activa": r2,
+                             "dias_previo": dp, "dias_ferromex": df, "dias_carretero": dc,
+                             "na_previo": na_p, "na_ffcc": na_f, "na_carretero": na_c})
+                        if ok_s:
+                            _cached_solicitudes_perfil_pendientes.clear()
+                            st.session_state["mostrar_form_perfil"] = None
+                            st.toast("📨 Solicitud enviada al administrador.", icon="📨")
+                            st.rerun()
+                        else:
+                            st.error(f"No se pudo enviar la solicitud: {res_s}")
+                    else:
                         np2 = {"nombre": nombre_p, "es_default": False,
                                "regla1_activa": r1, "regla2_activa": r2,
                                "dias_previo": dp, "dias_ferromex": df,
@@ -810,16 +928,11 @@ with nav[0]:
                            if _to_date(row.get(COL_BI["time_in"]))]
             if timein_dates:
                 timein_min = min(timein_dates)
-                dias_invalidos = [d for d in st.session_state["dias_especiales"]
-                                  if d < timein_min]
-                if dias_invalidos:
-                    # Desmarcar los días inválidos automáticamente
-                    for d in dias_invalidos:
-                        st.session_state["dias_especiales"].discard(d)
-                    alertas.append(("warning",
-                        f"⚠️ Día(s) marcado(s) en el calendario anteriores al "
-                        f"ingreso del contenedor ({timein_min.strftime('%d/%m/%Y')}). "
-                        f"Se desmarcaron automáticamente."))
+                # Los días especiales son globales: no se borran; este análisis
+                # simplemente ignora los anteriores al ingreso del contenedor.
+                st.session_state["_timein_min_analisis"] = timein_min
+                st.session_state["dias_especiales"] = {
+                    d for d in st.session_state["dias_especiales"] if d >= timein_min}
 
             with st.spinner("Verificando duplicados en historial..."):
                 contenedores_list = df_bv[COL_BI["contenedor"]].tolist()
@@ -1426,6 +1539,7 @@ with nav[0]:
 
         hoy      = hoy_mx()
         festivos = get_festivos_oficiales(st.session_state["cal_anio"])
+        comentarios_dias = st.session_state.get("dias_comentarios", {})
         meses_es = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
                     "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
 
@@ -1473,7 +1587,7 @@ with nav[0]:
                                 st.session_state["cal_mes"], dia)
                 es_finde = i >= 5
                 es_fest  = fecha in festivos
-                es_esp   = fecha in st.session_state["dias_especiales"]
+                es_esp   = fecha in comentarios_dias
                 es_hoy   = fecha == hoy
 
                 if es_hoy:      bg = "🟦"
@@ -1482,28 +1596,81 @@ with nav[0]:
                 elif es_finde:  bg = "⬜"
                 else:           bg = "  "
 
+                # Texto al pasar el mouse: comentario del admin (especial) y/o nombre del festivo
+                _tips = []
+                if es_esp:
+                    _tips.append("Día especial: " + (comentarios_dias.get(fecha) or "sin comentario"))
+                if es_fest:
+                    _tips.append("Festivo: " + nombre_festivo(fecha))
+                _tip = "\n".join(_tips) or None
+
                 if dcols[i].button(f"{bg}{dia}", key=f"c_{fecha}",
-                                    width='stretch'):
-                    if fecha in st.session_state["dias_especiales"]:
-                        st.session_state["dias_especiales"].discard(fecha)
-                    else:
-                        st.session_state["dias_especiales"].add(fecha)
-                    st.rerun()
+                                    width='stretch', help=_tip):
+                    # Solo el administrador puede marcar/quitar días especiales
+                    if es_admin:
+                        st.session_state["cal_dia_sel"] = fecha
+                        st.rerun()
 
         st.markdown("🟧 Festivo · 🟨 Especial · ⬜ Fin de semana · 🟦 Hoy")
 
-        if st.session_state["dias_especiales"]:
-            fechas_str = ", ".join(sorted(
-                d.strftime("%d/%m/%Y")
-                for d in st.session_state["dias_especiales"]
-            ))
-            st.caption(f"Días especiales: {fechas_str}")
+        # ── Edición (solo admin): comentario obligatorio al dar de alta ──
+        _sel = st.session_state.get("cal_dia_sel")
+        if es_admin and _sel:
+            with st.container(border=True):
+                st.markdown(f"**📅 {_sel.strftime('%d/%m/%Y')}**")
+                if _sel in comentarios_dias:
+                    st.caption(f"Día especial actual — «{comentarios_dias[_sel]}»")
+                    ca, cb = st.columns(2)
+                    if ca.button("🗑️ Quitar día especial", key="cal_quitar", width='stretch'):
+                        quitar_dia_especial_db(_sel)
+                        _cached_dias_especiales.clear()
+                        st.session_state["cal_dia_sel"] = None
+                        st.rerun()
+                    if cb.button("Cerrar", key="cal_cerrar_a", width='stretch'):
+                        st.session_state["cal_dia_sel"] = None
+                        st.rerun()
+                else:
+                    if _sel in festivos:
+                        st.caption(f"Es festivo oficial ({nombre_festivo(_sel)}). "
+                                   "Puedes marcarlo también como especial si lo necesitas.")
+                    _coment = st.text_input("Comentario (¿por qué es día especial?)",
+                                            key=f"cal_coment_{_sel}")
+                    ca, cb = st.columns(2)
+                    if ca.button("💾 Marcar como especial", key="cal_guardar",
+                                 type="primary", width='stretch'):
+                        if not _coment.strip():
+                            st.warning("El comentario es obligatorio.")
+                        else:
+                            ok_d, err_d = agregar_dia_especial_db(
+                                _sel, _coment.strip(), usuario["nombre_completo"])
+                            if ok_d:
+                                _cached_dias_especiales.clear()
+                                st.session_state["cal_dia_sel"] = None
+                                st.rerun()
+                            else:
+                                st.error(f"No se pudo guardar: {err_d}")
+                    if cb.button("Cancelar", key="cal_cerrar_b", width='stretch'):
+                        st.session_state["cal_dia_sel"] = None
+                        st.rerun()
+        elif not es_admin:
+            st.caption("Los días especiales los define el administrador. "
+                       "Pasa el mouse sobre un día marcado para ver el motivo.")
+
+        if comentarios_dias:
+            with st.expander(f"Días especiales vigentes ({len(comentarios_dias)})"):
+                for d in sorted(comentarios_dias):
+                    st.write(f"🟨 **{d.strftime('%d/%m/%Y')}** — {comentarios_dias[d] or 'sin comentario'}")
         else:
             st.caption("Ningún día especial marcado")
 
-        if st.button("🗑️ Limpiar días especiales"):
-            st.session_state["dias_especiales"] = set()
-            st.rerun()
+        if es_admin and comentarios_dias:
+            _conf = st.checkbox("Confirmar: quitar TODOS los días especiales", key="cal_conf_limpiar")
+            if st.button("🗑️ Limpiar días especiales", disabled=not _conf):
+                limpiar_dias_especiales_db()
+                _cached_dias_especiales.clear()
+                st.session_state["cal_conf_limpiar"] = False
+                st.session_state["cal_dia_sel"] = None
+                st.rerun()
 
 # ════════════════════════════════════════════════════════════════
 #   PESTAÑA 2 — HISTORIAL NC

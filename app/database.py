@@ -1315,3 +1315,150 @@ def registrar_transferencia_auto(responsable: str, usuario_id: str,
             return True, resultado, folio
         return False, resultado, None
     return False, "No se pudo generar un folio único después de varios intentos.", None
+
+
+# ════════════════════════════════════════════════════════════════
+#   SOLICITUDES DE PERFIL (usuario solicita → admin aprueba/rechaza)
+#   Tabla: perfiles_solicitudes
+# ════════════════════════════════════════════════════════════════
+def crear_solicitud_perfil(usuario_id: str, usuario_nombre: str, perfil: dict):
+    """Un usuario (no admin) solicita un perfil nuevo. Regresa (True, fila) o (False, error)."""
+    try:
+        db = get_client()
+        res = db.table("perfiles_solicitudes").insert({
+            "solicitante_id":     usuario_id,
+            "solicitante_nombre": usuario_nombre,
+            "nombre":             perfil["nombre"],
+            "regla1_activa":      perfil.get("regla1_activa", True),
+            "regla2_activa":      perfil.get("regla2_activa", True),
+            "dias_previo":        perfil.get("dias_previo", 3),
+            "dias_ferromex":      perfil.get("dias_ferromex", 3),
+            "dias_carretero":     perfil.get("dias_carretero", 2),
+            "na_previo":          perfil.get("na_previo", False),
+            "na_ffcc":            perfil.get("na_ffcc", False),
+            "na_carretero":       perfil.get("na_carretero", False),
+            "estado":             "pendiente",
+            "notificado":         False,
+        }).execute()
+        return True, (res.data[0] if res.data else {})
+    except Exception as e:
+        return False, str(e)
+
+
+def obtener_solicitudes_perfil(estado: str = None, solicitante_id: str = None, limite: int = 50):
+    """Lista solicitudes de perfil (más recientes primero), con filtros opcionales."""
+    try:
+        db = get_client()
+        q = db.table("perfiles_solicitudes").select("*")
+        if estado:
+            q = q.eq("estado", estado)
+        if solicitante_id:
+            q = q.eq("solicitante_id", solicitante_id)
+        return q.order("fecha_creacion", desc=True).limit(limite).execute().data or []
+    except Exception:
+        return []
+
+
+def resolver_solicitud_perfil(solicitud: dict, aprobar: bool, admin_nombre: str,
+                               motivo_rechazo: str = ""):
+    """
+    Aprueba (crea el perfil real) o rechaza (con motivo) una solicitud.
+    Regresa (True, None) o (False, error).
+    """
+    from datetime import datetime, timezone
+    try:
+        db = get_client()
+        if aprobar:
+            ok, data = crear_perfil_db({
+                "nombre":         solicitud["nombre"],
+                "regla1_activa":  solicitud.get("regla1_activa", True),
+                "regla2_activa":  solicitud.get("regla2_activa", True),
+                "dias_previo":    solicitud.get("dias_previo", 3),
+                "dias_ferromex":  solicitud.get("dias_ferromex", 3),
+                "dias_carretero": solicitud.get("dias_carretero", 2),
+                "na_previo":      solicitud.get("na_previo", False),
+                "na_ffcc":        solicitud.get("na_ffcc", False),
+                "na_carretero":   solicitud.get("na_carretero", False),
+            })
+            if not ok:
+                return False, str(data)
+        db.table("perfiles_solicitudes").update({
+            "estado":            "aprobada" if aprobar else "rechazada",
+            "motivo_rechazo":    None if aprobar else motivo_rechazo,
+            "resuelto_por":      admin_nombre,
+            "fecha_resolucion":  datetime.now(timezone.utc).isoformat(),
+            "notificado":        False,
+        }).eq("id", solicitud["id"]).execute()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def obtener_solicitudes_perfil_sin_notificar(usuario_id: str):
+    """Solicitudes del usuario ya resueltas de las que aún no se le avisó."""
+    try:
+        db = get_client()
+        res = db.table("perfiles_solicitudes").select("*").eq(
+            "solicitante_id", usuario_id
+        ).neq("estado", "pendiente").eq("notificado", False).execute()
+        return res.data or []
+    except Exception:
+        return []
+
+
+def marcar_solicitudes_perfil_notificadas(ids: list):
+    try:
+        if not ids:
+            return True
+        db = get_client()
+        db.table("perfiles_solicitudes").update({"notificado": True}).in_("id", ids).execute()
+        return True
+    except Exception:
+        return False
+
+
+# ════════════════════════════════════════════════════════════════
+#   DÍAS ESPECIALES GLOBALES (solo el admin los pone/quita)
+#   Tabla: dias_especiales (fecha date PK, comentario, creado_por)
+# ════════════════════════════════════════════════════════════════
+def obtener_dias_especiales_db():
+    """Regresa {date: comentario} con todos los días especiales guardados."""
+    from datetime import date as _date
+    try:
+        db = get_client()
+        res = db.table("dias_especiales").select("fecha, comentario").execute()
+        return {_date.fromisoformat(str(r["fecha"])[:10]): (r.get("comentario") or "")
+                for r in (res.data or [])}
+    except Exception:
+        return {}
+
+
+def agregar_dia_especial_db(fecha, comentario: str, creado_por: str):
+    try:
+        db = get_client()
+        db.table("dias_especiales").upsert({
+            "fecha":      fecha.isoformat(),
+            "comentario": comentario,
+            "creado_por": creado_por,
+        }).execute()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def quitar_dia_especial_db(fecha):
+    try:
+        db = get_client()
+        db.table("dias_especiales").delete().eq("fecha", fecha.isoformat()).execute()
+        return True
+    except Exception:
+        return False
+
+
+def limpiar_dias_especiales_db():
+    try:
+        db = get_client()
+        db.table("dias_especiales").delete().neq("comentario", "__nunca__").execute()
+        return True
+    except Exception:
+        return False

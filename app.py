@@ -215,7 +215,7 @@ init()
 # ── Restaurar sesión desde el token en la URL (?sid=...) ────────
 # Mientras la URL conserve ?sid=..., la sesión se restaura automáticamente
 # al recargar (F5), navegar o volver a abrir la pestaña. El token vence de
-# forma ABSOLUTA a los 2 días (ver DIAS_MAX_SESION en database.py).
+# forma ABSOLUTA a los 5 días (ver DIAS_MAX_SESION en database.py).
 if not st.session_state.get("autenticado"):
     try:
         params = st.query_params
@@ -258,7 +258,7 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
                     if usuario:
                         st.session_state["autenticado"]   = True
                         st.session_state["usuario"]       = usuario
-                        # Crear sesión en BD (expira a los 2 días) y
+                        # Crear sesión en BD (expira a los 5 días) y
                         # guardar el token en la URL para persistencia
                         from app.database import crear_sesion as _cs
                         tok = _cs(usuario["id"], usuario["username"])
@@ -277,7 +277,7 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
 usuario     = st.session_state["usuario"]
 es_admin    = usuario["rol"] == "admin"
 
-# ── Verificar expiración absoluta (2 días) — cada 2 minutos, no en cada
+# ── Verificar expiración absoluta (5 días) — cada 2 minutos, no en cada
 #    render (evita un round-trip a Supabase por cada clic) ──────────────
 import time as _time
 _ultima_verif = st.session_state.get("_ultima_verif_sesion", 0)
@@ -286,7 +286,7 @@ if st.session_state.get("session_token") and (_time.time() - _ultima_verif > 120
     _check = _vs2(st.session_state["session_token"])
     st.session_state["_ultima_verif_sesion"] = _time.time()
     if not _check:
-        # Sesión vencida (más de 2 días desde el login)
+        # Sesión vencida (más de 5 días desde el login)
         st.query_params.clear()
         for k in list(st.session_state.keys()):
             del st.session_state[k]

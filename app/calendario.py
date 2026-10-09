@@ -207,3 +207,26 @@ def calcular_desfase_regla5(fecha_programacion, fecha_timeout, dias_especiales,
         fecha_actual += timedelta(days=1)
 
     return dias_desfase, fecha_limite
+
+
+# ── Nombre del festivo (para mostrarlo al pasar el mouse en el calendario) ──
+_NOMBRES_FESTIVOS = {
+    (1, 1):   "Año Nuevo",
+    (3, 21):  "Natalicio de Benito Juárez",
+    (5, 1):   "Día del Trabajo",
+    (9, 16):  "Independencia de México",
+    (12, 25): "Navidad",
+}
+
+
+def nombre_festivo(fecha):
+    """Regresa el nombre del festivo oficial de esa fecha, o '' si no es festivo."""
+    if fecha not in get_festivos_oficiales(fecha.year):
+        return ""
+    if (fecha.month, fecha.day) in _NOMBRES_FESTIVOS:
+        return _NOMBRES_FESTIVOS[(fecha.month, fecha.day)]
+    if fecha.month == 2:
+        return "Día de la Constitución"
+    if fecha.month == 11:
+        return "Revolución Mexicana"
+    return "Día festivo oficial"

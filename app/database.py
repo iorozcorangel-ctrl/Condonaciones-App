@@ -398,7 +398,7 @@ def obtener_ultimo_perfil_db(usuario_id: str):
 #   GESTIÓN DE SESIONES PERSISTENTES
 # ════════════════════════════════════════════════════════════════
 
-DIAS_MAX_SESION = 2   # Duración absoluta máxima de la sesión (no se extiende)
+DIAS_MAX_SESION = 5   # Duración absoluta máxima de la sesión (no se extiende)
 MAX_SESIONES    = 3   # Máximo de sesiones simultáneas por usuario
 
 

@@ -19,6 +19,26 @@ def normalizar_contenedor(valor):
     return s
 
 
+import re
+
+# Formato obligatorio del número de NC: "NC-" + consecutivo de 4 o 5 dígitos
+# (hoy van en 4 dígitos, p. ej. NC-2585; al pasar de NC-9999 seguirá NC-10000).
+# Si algún día se necesitan 6 dígitos, solo hay que cambiar NC_DIGITOS_MAX.
+NC_DIGITOS_MIN = 4
+NC_DIGITOS_MAX = 5
+_NC_PATRON = re.compile(rf"^NC-\d{{{NC_DIGITOS_MIN},{NC_DIGITOS_MAX}}}$")
+
+
+def normalizar_numero_nc(valor):
+    """Quita espacios sobrantes y pasa a mayúsculas: ' nc-2585 ' -> 'NC-2585'."""
+    return str(valor or "").strip().upper().replace(" ", "")
+
+
+def validar_formato_nc(valor):
+    """True si el número de NC es exactamente 'NC-' + 4 o 5 dígitos."""
+    return bool(_NC_PATRON.match(normalizar_numero_nc(valor)))
+
+
 def validar_formato_contenedor(contenedor):
     if len(contenedor) != 11:
         return False

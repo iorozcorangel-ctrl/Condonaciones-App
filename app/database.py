@@ -483,6 +483,28 @@ def verificar_sesion(token: str):
         return None
 
 
+def obtener_inicio_sesion(token: str):
+    """
+    Regresa la fecha/hora (datetime con zona UTC) en que se creó la sesión
+    del token, o None si no se puede leer. Sirve para mostrar "Ingreso:
+    fecha y hora" aun cuando la sesión se restaura al recargar la página.
+    """
+    from datetime import datetime, timezone
+    if not token:
+        return None
+    try:
+        db  = get_client()
+        res = db.table("sesiones").select("fecha_creacion").eq("token", token).execute()
+        if not res.data or not res.data[0].get("fecha_creacion"):
+            return None
+        dt = datetime.fromisoformat(str(res.data[0]["fecha_creacion"]).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
 def eliminar_sesion(token: str):
     """Elimina una sesión (logout)."""
     if not token:

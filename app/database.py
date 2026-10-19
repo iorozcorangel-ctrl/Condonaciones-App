@@ -53,7 +53,9 @@ def obtener_usuarios():
     """Retorna todos los usuarios activos."""
     try:
         db = get_client()
-        res = db.table("usuarios").select("id, username, nombre_completo, rol, activo, fecha_creacion").order("fecha_creacion").execute()
+        # select("*") para incluir en_rotacion / orden_rotacion si ya existen
+        # (si aún no se corrió el SQL, no truena: simplemente no vienen)
+        res = db.table("usuarios").select("*").order("fecha_creacion").execute()
         return res.data or []
     except Exception:
         return []
@@ -697,7 +699,8 @@ def eliminar_nc_estatus(estatus_id: str):
 # ── NC Asignaciones — CRUD principal ────────────────────────────
 
 def crear_nc_asignacion(nc_externo: str, responsable_id: str, responsable_nombre: str,
-                         fecha_solicitud: str, creado_por: str, vinculada_a: str = None):
+                         fecha_solicitud: str, creado_por: str, vinculada_a: str = None,
+                         notificar: bool = True):
     """Crea una nueva NC asignada. Retorna (True, id) o (False, error)."""
     try:
         db = get_client()
@@ -715,10 +718,11 @@ def crear_nc_asignacion(nc_externo: str, responsable_id: str, responsable_nombre
         }).execute()
         if res.data:
             nc_id = res.data[0]["id"]
-            crear_nc_notificacion(
-                responsable_id, nc_id,
-                f"Se te asignó una nueva NC: {nc_externo}"
-            )
+            if notificar:
+                crear_nc_notificacion(
+                    responsable_id, nc_id,
+                    f"Se te asignó una nueva NC: {nc_externo}"
+                )
             return True, nc_id
         return False, "No se pudo crear"
     except Exception as e:
@@ -1462,3 +1466,44 @@ def limpiar_dias_especiales_db():
         return True
     except Exception:
         return False
+
+
+
+# ════════════════════════════════════════════════════════════════
+#   ROTACIÓN PARA ASIGNACIÓN MASIVA DE NC
+#   usuarios.en_rotacion / usuarios.orden_rotacion  +  tabla configuracion_app
+# ════════════════════════════════════════════════════════════════
+def actualizar_rotacion_usuario(usuario_id: str, en_rotacion: bool, orden):
+    try:
+        db = get_client()
+        db.table("usuarios").update({
+            "en_rotacion":    bool(en_rotacion),
+            "orden_rotacion": int(orden) if orden not in (None, "") else None,
+        }).eq("id", usuario_id).execute()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def obtener_config_app(clave: str, defecto=None):
+    try:
+        db = get_client()
+        res = db.table("configuracion_app").select("valor").eq("clave", clave).execute()
+        if res.data:
+            return res.data[0]["valor"]
+        return defecto
+    except Exception:
+        return defecto
+
+
+def guardar_config_app(clave: str, valor):
+    from datetime import datetime, timezone
+    try:
+        db = get_client()
+        db.table("configuracion_app").upsert({
+            "clave": clave, "valor": valor,
+            "fecha_actualizacion": datetime.now(timezone.utc).isoformat(),
+        }).execute()
+        return True, None
+    except Exception as e:
+        return False, str(e)

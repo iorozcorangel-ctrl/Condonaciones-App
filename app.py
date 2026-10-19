@@ -2186,7 +2186,7 @@ with nav[IDX_GESTION]:
 
             todas_completas = _cached_nc_asignaciones()  # sin filtro de búsqueda, para los selectores de vínculo
 
-            for nc in todas:
+            def _render_nc_asignada(nc):
                 vis = nc.get("estado_visual", "nuevo")
                 icono, bg = COLOR_VISUAL.get(vis, ("⚪", "#F5F5F5"))
                 inhab = " ⛔ INHABILITADA" if nc.get("inhabilitada") else ""
@@ -2362,6 +2362,37 @@ with nav[IDX_GESTION]:
                                 if st.button("No", key=f"confelim_no_{nc['id']}"):
                                     del st.session_state[f"confirmar_elim_{nc['id']}"]
                                     st.rerun()
+
+            # ── Separar por estado en pestañas ────────────────────────
+            def _es_rechazada(n):
+                return "RECHAZ" in str(n.get("estatus") or "").upper()
+
+            def _es_pendiente(n):
+                return "PENDIENTE" in str(n.get("estatus") or "").upper()
+
+            grp_rech  = [n for n in todas if n.get("inhabilitada") or _es_rechazada(n)]
+            _resto    = [n for n in todas if n not in grp_rech]
+            grp_concl = [n for n in _resto if n.get("concluida")]
+            grp_pend  = [n for n in _resto if not n.get("concluida") and _es_pendiente(n)]
+            grp_asig  = [n for n in _resto if not n.get("concluida") and not _es_pendiente(n)]
+
+            _grupos = [
+                (f"🔵 NC Pendientes ({len(grp_pend)})", grp_pend,
+                 "Sin NC pendientes de revisar."),
+                (f"🟢 NC Asignadas / en proceso ({len(grp_asig)})", grp_asig,
+                 "Sin NC en proceso."),
+                (f"✅ NC Concluidas ({len(grp_concl)})", grp_concl,
+                 "Sin NC concluidas."),
+                (f"⛔ NC Rechazadas / Inhabilitadas ({len(grp_rech)})", grp_rech,
+                 "Sin NC rechazadas ni inhabilitadas."),
+            ]
+            _tabs_estado = st.tabs([g[0] for g in _grupos])
+            for _tab, (_lbl, _lista, _vacio) in zip(_tabs_estado, _grupos):
+                with _tab:
+                    if not _lista:
+                        st.caption(_vacio)
+                    for _nc_item in _lista:
+                        _render_nc_asignada(_nc_item)
         _si += 1
 
     with sub_nav[_si]:

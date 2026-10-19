@@ -99,6 +99,7 @@ def fecha_hora_mx(iso_str) -> str:
 from app.config import COL_BI, COL_TAB
 # Perfiles ahora vienen de Supabase via database.py
 from app.calendario import get_festivos_oficiales, nombre_festivo
+from app import asignacion_masiva as _am
 from app.validaciones import (validar_archivos, aplicar_regla1, aplicar_regla2,
                                calcular_desfases, calcular_montos,
                                normalizar_contenedor, to_date,
@@ -106,6 +107,8 @@ from app.validaciones import (validar_archivos, aplicar_regla1, aplicar_regla2,
 from app.reporte import generar_reporte
 from app.database import (login_usuario, obtener_usuarios, crear_usuario,
                            obtener_inicio_sesion,
+                           actualizar_rotacion_usuario, obtener_config_app,
+                           guardar_config_app,
                            crear_solicitud_perfil, obtener_solicitudes_perfil,
                            resolver_solicitud_perfil,
                            obtener_solicitudes_perfil_sin_notificar,
@@ -2174,6 +2177,115 @@ with nav[IDX_GESTION]:
                                 else:
                                     st.error(f"Error: {res}")
 
+            # ── Asignación masiva desde Excel (ciclo entre personas en rotación) ──
+            with st.expander("📥 Asignación masiva desde Excel", expanded=False):
+                st.caption(
+                    "Excel con 3 columnas: **A** = Fecha de NC · **B** = Número de NC externo "
+                    "(formato NC-#### o NC-#####) · **C** = Persona asignada (opcional: nombre "
+                    "completo o usuario). Las filas sin persona se reparten en ciclo entre las "
+                    "personas marcadas **En rotación** (se configura en 👥 Usuarios). Si una fila "
+                    "trae persona, se le asigna a ella y cuenta como su turno: el ciclo se la "
+                    "salta la próxima vez. El ciclo continúa donde se quedó la carga anterior."
+                )
+                st.download_button("📄 Descargar plantilla de ejemplo",
+                                   data=_am.plantilla_excel_bytes(),
+                                   file_name="plantilla_asignacion_masiva.xlsx",
+                                   key="dl_plantilla_masiva")
+
+                _usrs_m = _cached_usuarios()
+                _rot_m = _am.usuarios_en_rotacion(_usrs_m)
+                _estado_m = obtener_config_app(_am.CLAVE_ESTADO, {}) or {}
+                if _rot_m:
+                    _sig_id = _estado_m.get("siguiente_id")
+                    _txt_rot = " → ".join(
+                        (f"**{u['nombre_completo']}** ⬅ sigue" if u["id"] == _sig_id
+                         else u["nombre_completo"]) for u in _rot_m)
+                    st.markdown(f"🔄 Ciclo actual ({len(_rot_m)} personas): {_txt_rot}")
+                else:
+                    st.warning("No hay personas marcadas 'En rotación'. Configúralas en 👥 Usuarios.")
+
+                with st.form("form_masivo_nc"):
+                    _arch_m = st.file_uploader("Archivo Excel (.xlsx)", type=["xlsx"],
+                                               key=f"up_masivo_{st.session_state.get('masivo_up_key', 0)}")
+                    _prev_m = st.form_submit_button("🔍 Previsualizar asignación", type="primary")
+                if _prev_m:
+                    if _arch_m is None:
+                        st.error("Sube el archivo Excel primero.")
+                    else:
+                        _filas_m, _err_m = _am.leer_excel_masivo(_arch_m)
+                        if _err_m:
+                            st.error(_err_m)
+                        else:
+                            _exist_m = {_am._norm(n["nc_externo"]) for n in obtener_nc_asignaciones()}
+                            _plan_m, _est_nuevo_m, _ = _am.planear_asignacion(
+                                _filas_m, _usrs_m, _exist_m, _estado_m)
+                            st.session_state["masivo_plan"] = _plan_m
+                            st.session_state["masivo_estado_nuevo"] = _est_nuevo_m
+
+                if st.session_state.get("masivo_resultado"):
+                    _tipo_r, _msg_r = st.session_state.pop("masivo_resultado")
+                    (st.success if _tipo_r == "ok" else st.warning)(_msg_r)
+
+                _plan_m = st.session_state.get("masivo_plan")
+                if _plan_m:
+                    _ok_m  = [p for p in _plan_m if p["ok"]]
+                    _bad_m = [p for p in _plan_m if not p["ok"]]
+                    mc1, mc2 = st.columns(2)
+                    mc1.metric("✅ NC a crear", len(_ok_m))
+                    mc2.metric("❌ Filas con error (se omiten)", len(_bad_m))
+                    st.dataframe(pd.DataFrame([{
+                        "Fila Excel": p["fila"],
+                        "Fecha": p["fecha"].strftime("%d/%m/%Y") if p["fecha"] else "—",
+                        "NC": p["nc"] or "—",
+                        "Asignada a": p["persona_nombre"] or "—",
+                        "Modo": p["modo"] or "—",
+                        "Resultado": "✅ OK" if p["ok"] else f"❌ {p['motivo']}",
+                    } for p in _plan_m]), hide_index=True, width='stretch')
+                    if _ok_m:
+                        _conteo = {}
+                        for p in _ok_m:
+                            _conteo[p["persona_nombre"]] = _conteo.get(p["persona_nombre"], 0) + 1
+                        st.caption("Reparto: " + " · ".join(f"{k}: {v}" for k, v in _conteo.items()))
+                    bc1, bc2 = st.columns(2)
+                    if bc1.button(f"✅ Confirmar y crear {len(_ok_m)} NC", type="primary",
+                                  disabled=not _ok_m, key="btn_conf_masivo", width='stretch'):
+                        _exist_now = {_am._norm(n["nc_externo"]) for n in obtener_nc_asignaciones()}
+                        _creadas, _fallas, _por_persona = 0, [], {}
+                        _barra = st.progress(0.0, text="Creando NC...")
+                        for i, p in enumerate(_ok_m, 1):
+                            if _am._norm(p["nc"]) in _exist_now:
+                                _fallas.append(f"{p['nc']} (ya existía)")
+                            else:
+                                ok_c, res_c = crear_nc_asignacion(
+                                    p["nc"], p["persona_id"], p["persona_nombre"],
+                                    p["fecha"].isoformat(), usuario["id"], None,
+                                    notificar=False)
+                                if ok_c:
+                                    _creadas += 1
+                                    _exist_now.add(_am._norm(p["nc"]))
+                                    _por_persona.setdefault(p["persona_id"], []).append((res_c, p["nc"]))
+                                else:
+                                    _fallas.append(f"{p['nc']} ({res_c})")
+                            _barra.progress(i / len(_ok_m), text=f"Creando NC... {i}/{len(_ok_m)}")
+                        # Una sola notificación por persona (no una por NC)
+                        for _uid, _lst in _por_persona.items():
+                            _ncs_txt = ", ".join(n for _, n in _lst[:15]) + (" ..." if len(_lst) > 15 else "")
+                            crear_nc_notificacion(_uid, _lst[0][0],
+                                f"Se te asignaron {len(_lst)} NC nuevas: {_ncs_txt}")
+                        guardar_config_app(_am.CLAVE_ESTADO,
+                                           st.session_state.get("masivo_estado_nuevo") or {})
+                        invalidar_cache_nc()
+                        st.session_state["masivo_plan"] = None
+                        st.session_state["masivo_up_key"] = st.session_state.get("masivo_up_key", 0) + 1
+                        _msg = f"Se crearon {_creadas} NC."
+                        if _fallas:
+                            _msg += " No se pudieron crear: " + "; ".join(_fallas)
+                        st.session_state["masivo_resultado"] = ("ok" if not _fallas else "warn", _msg)
+                        st.rerun()
+                    if bc2.button("Cancelar", key="btn_cancel_masivo", width='stretch'):
+                        st.session_state["masivo_plan"] = None
+                        st.rerun()
+
             st.markdown("### Todas las NCs asignadas")
             busq_asig = st.text_input("🔍 Buscar por NC, contenedor o factura", key="busq_asignar")
             todas = buscar_nc_asignaciones(busq_asig) if busq_asig.strip() else _cached_nc_asignaciones()
@@ -3011,6 +3123,44 @@ if es_admin and IDX_USUARIOS is not None:
                             st.rerun()
                         else:
                             st.error(msg)
+
+        # ── Rotación para asignación masiva de NC ─────────────
+        st.markdown("### 🔄 Rotación de asignación masiva de NC")
+        st.caption("Marca **En rotación** a quienes deben recibir NC en el reparto automático "
+                   "(desmárcalos, por ejemplo, si están de vacaciones). **Orden** define quién es "
+                   "la persona 1, 2, 3… del ciclo (0 = sin orden, va al final). Los usuarios "
+                   "inactivos nunca entran al ciclo.")
+        _usrs_rot = [u for u in _cached_usuarios() if u["activo"]]
+        if _usrs_rot and "en_rotacion" not in _usrs_rot[0]:
+            st.warning("Falta ejecutar el SQL de rotación en Supabase (columnas en_rotacion / orden_rotacion).")
+        _df_rot = pd.DataFrame([{
+            "id": u["id"],
+            "Nombre": u["nombre_completo"],
+            "Rol": "Admin" if u["rol"] == "admin" else "Usuario",
+            "En rotación": u.get("en_rotacion", True) is not False,
+            "Orden": int(u.get("orden_rotacion") or 0),
+        } for u in _usrs_rot])
+        if not _df_rot.empty:
+            _df_rot_ed = st.data_editor(
+                _df_rot, key="editor_rotacion", hide_index=True, width='stretch',
+                column_order=["Nombre", "Rol", "En rotación", "Orden"],
+                disabled=["Nombre", "Rol"],
+                column_config={"Orden": st.column_config.NumberColumn(min_value=0, max_value=99, step=1)})
+            if st.button("💾 Guardar rotación", key="btn_guardar_rot"):
+                _err_rot = []
+                for _, r in _df_rot_ed.iterrows():
+                    _orig = _df_rot[_df_rot["id"] == r["id"]].iloc[0]
+                    if bool(r["En rotación"]) != bool(_orig["En rotación"]) or int(r["Orden"] or 0) != int(_orig["Orden"]):
+                        ok_r, e_r = actualizar_rotacion_usuario(r["id"], bool(r["En rotación"]),
+                                                                int(r["Orden"] or 0) or None)
+                        if not ok_r:
+                            _err_rot.append(f"{r['Nombre']}: {e_r}")
+                _cached_usuarios.clear()
+                if _err_rot:
+                    st.error("No se pudo guardar: " + "; ".join(_err_rot))
+                else:
+                    st.success("Rotación guardada.")
+                    st.rerun()
 
         # ── Lista de usuarios ─────────────────────────────────
         st.markdown("### Usuarios registrados")

@@ -197,18 +197,116 @@ def planear_asignacion(filas, usuarios, nc_existentes: set, estado: dict):
     return plan, estado_nuevo, None
 
 
-def plantilla_excel_bytes() -> bytes:
-    """Excel de ejemplo con las 3 columnas, para descargar."""
+def plantilla_excel_bytes(usuarios: list = None) -> bytes:
+    """
+    Machote descargable para la asignación masiva:
+      Hoja 1 "Cargar NC"     → encabezados listos para llenar (la que se sube).
+                               Columna C con lista desplegable de personas activas.
+      Hoja 2 "Instrucciones" → cómo llenarlo, reglas del ciclo y ejemplos.
+      Hoja 3 "Personas"      → nombres válidos para la columna C.
+    El sistema solo lee la PRIMERA hoja, así que las otras no estorban al subirlo.
+    """
     import io
-    df = pd.DataFrame({
-        "Fecha NC": ["18/10/2026", "18/10/2026", "18/10/2026"],
-        "NC Externo": ["NC-0001", "NC-0002", "NC-0003"],
-        "Persona asignada (opcional)": ["", "", "Nombre Apellido"],
-    })
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    naranja = PatternFill("solid", fgColor="E65100")
+    crema   = PatternFill("solid", fgColor="FFF3E0")
+    blanco_b = Font(bold=True, color="FFFFFF")
+    negrita  = Font(bold=True)
+    borde    = Border(*(Side(style="thin", color="BDBDBD"),) * 4)
+    centro   = Alignment(horizontal="center", vertical="center", wrap_text=True)
+
+    activos = [u for u in (usuarios or []) if u.get("activo")]
+    activos = sorted(activos, key=lambda u: _norm(u.get("nombre_completo")))
+
+    wb = Workbook()
+
+    # ── Hoja 1: Cargar NC ───────────────────────────────────────
+    ws = wb.active
+    ws.title = "Cargar NC"
+    encabezados = ["Fecha NC (dd/mm/aaaa)", "NC Externo (NC-####)", "Persona asignada (opcional)"]
+    for col, (txt, ancho) in enumerate(zip(encabezados, (22, 22, 34)), start=1):
+        c = ws.cell(row=1, column=col, value=txt)
+        c.fill, c.font, c.alignment, c.border = naranja, blanco_b, centro, borde
+        ws.column_dimensions["ABC"[col - 1]].width = ancho
+    ws.row_dimensions[1].height = 30
+    ws.freeze_panes = "A2"
+    for fila in range(2, 1002):
+        ws.cell(row=fila, column=1).number_format = "DD/MM/YYYY"
+        ws.cell(row=fila, column=2).number_format = "@"
+
+    # ── Hoja 3: Personas (se crea antes para la lista desplegable) ──
+    wp = wb.create_sheet("Personas")
+    wp["A1"], wp["B1"], wp["C1"] = "Nombre completo", "Usuario", "¿En rotación?"
+    for c in (wp["A1"], wp["B1"], wp["C1"]):
+        c.fill, c.font, c.alignment = naranja, blanco_b, centro
+    for i, u in enumerate(activos, start=2):
+        wp.cell(row=i, column=1, value=u.get("nombre_completo"))
+        wp.cell(row=i, column=2, value=u.get("username"))
+        wp.cell(row=i, column=3,
+                value="Sí" if u.get("en_rotacion", True) is not False else "No (vacaciones / fuera del ciclo)")
+    wp.column_dimensions["A"].width = 30
+    wp.column_dimensions["B"].width = 18
+    wp.column_dimensions["C"].width = 34
+    if activos:
+        dv = DataValidation(type="list", formula1=f"=Personas!$A$2:$A${len(activos) + 1}",
+                            allow_blank=True, showErrorMessage=False)
+        dv.promptTitle = "Persona asignada (opcional)"
+        dv.prompt = "Déjalo vacío para que el sistema asigne en ciclo, o elige a alguien de la lista."
+        dv.showInputMessage = True
+        ws.add_data_validation(dv)
+        dv.add("C2:C1001")
+
+    # ── Hoja 2: Instrucciones ───────────────────────────────────
+    wi = wb.create_sheet("Instrucciones", 1)
+    wi.column_dimensions["A"].width = 26
+    wi.column_dimensions["B"].width = 95
+    lineas = [
+        ("titulo", "Machote — Asignación masiva de NC", ""),
+        ("", "", ""),
+        ("seccion", "Cómo llenarlo", ""),
+        ("", "1. Llena la hoja «Cargar NC»", "Una NC por fila, empezando en la fila 2. No cambies el orden de las columnas."),
+        ("", "2. Columna A — Fecha NC", "Obligatoria. Fecha de solicitud de la NC, formato dd/mm/aaaa (ej. 18/10/2026)."),
+        ("", "3. Columna B — NC Externo", "Obligatoria. Formato NC- y 4 o 5 dígitos (ej. NC-2585, NC-10000). "
+                                          "Se aceptan minúsculas y espacios sobrantes; «2585» o «NC2585» se rechazan."),
+        ("", "4. Columna C — Persona", "Opcional. VACÍA = el sistema la asigna en ciclo. Con nombre = se asigna a esa "
+                                       "persona (usa la lista desplegable o la hoja «Personas»; también acepta el usuario)."),
+        ("", "5. Súbelo", "Gestión NC → Asignar NC → «📥 Asignación masiva desde Excel» → Previsualizar → Confirmar."),
+        ("", "", ""),
+        ("seccion", "Cómo funciona el ciclo", ""),
+        ("", "Reparto", "Las NC sin persona se reparten 1, 2, 3 … y vuelve a empezar, solo entre quienes "
+                        "están «En rotación» (se configura en 👥 Usuarios)."),
+        ("", "Asignación manual", "Si una NC trae persona, cuenta como su turno: el ciclo se la salta la próxima vez."),
+        ("", "Continuidad", "El ciclo sigue donde se quedó la carga anterior."),
+        ("", "", ""),
+        ("seccion", "Se rechaza la fila si…", ""),
+        ("", "", "• Fecha vacía o inválida  • NC vacía o con formato incorrecto  • La NC ya existe en el sistema"),
+        ("", "", "• La NC se repite dentro del mismo Excel  • La persona no existe o está inactiva"),
+        ("", "", "Las filas con error se omiten y las demás se crean; antes de crear verás una previsualización."),
+        ("", "", ""),
+        ("seccion", "Ejemplo (NO lo copies a la hoja «Cargar NC»)", ""),
+        ("ejemplo_h", "Fecha NC | NC Externo | Persona", "Resultado"),
+        ("ejemplo", "18/10/2026 | NC-0001 | (vacío)", "Se asigna a quien siga en el ciclo"),
+        ("ejemplo", "18/10/2026 | NC-0002 | Saul Vasquez", "Se asigna a Saul y el ciclo lo salta la próxima vez"),
+        ("ejemplo", "18/10/2026 | 0003 | (vacío)", "❌ Rechazada: formato de NC inválido"),
+    ]
+    for r, (tipo, a, b) in enumerate(lineas, start=1):
+        ca, cb = wi.cell(row=r, column=1, value=a), wi.cell(row=r, column=2, value=b)
+        cb.alignment = Alignment(wrap_text=True, vertical="top")
+        ca.alignment = Alignment(wrap_text=True, vertical="top")
+        if tipo == "titulo":
+            ca.font = Font(bold=True, size=14, color="E65100")
+        elif tipo == "seccion":
+            ca.font = blanco_b
+            ca.fill = cb.fill = naranja
+        elif tipo == "ejemplo_h":
+            ca.font = cb.font = negrita
+            ca.fill = cb.fill = crema
+        elif a:
+            ca.font = negrita
+
     buf = io.BytesIO()
-    with pd.ExcelWriter(buf, engine="openpyxl") as w:
-        df.to_excel(w, index=False, sheet_name="NC")
-        ws = w.sheets["NC"]
-        for col, ancho in zip("ABC", (14, 16, 30)):
-            ws.column_dimensions[col].width = ancho
+    wb.save(buf)
     return buf.getvalue()

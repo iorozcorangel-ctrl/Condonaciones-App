@@ -2187,8 +2187,8 @@ with nav[IDX_GESTION]:
                     "trae persona, se le asigna a ella y cuenta como su turno: el ciclo se la "
                     "salta la próxima vez. El ciclo continúa donde se quedó la carga anterior."
                 )
-                st.download_button("📄 Descargar plantilla de ejemplo",
-                                   data=_am.plantilla_excel_bytes(),
+                st.download_button("📄 Descargar machote (Excel con instrucciones)",
+                                   data=_am.plantilla_excel_bytes(_cached_usuarios()),
                                    file_name="plantilla_asignacion_masiva.xlsx",
                                    key="dl_plantilla_masiva")
 

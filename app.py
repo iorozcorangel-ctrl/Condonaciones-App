@@ -1434,6 +1434,11 @@ with nav[0]:
                                     fecha_sol, fecha_rev, nc, {}, buffer)
                     buffer.seek(0)
                     st.session_state["reporte_bytes"] = buffer.getvalue()
+                # Reporte NUEVO → todavía no está guardado en Historial.
+                # (antes la bandera podía quedarse en True de un análisis
+                # anterior de la misma sesión y el guardado se saltaba en silencio)
+                st.session_state["nc_registrada"] = False
+                st.session_state["nc_registro_error"] = ""
 
                 # ── Heredar Cliente y Factura hacia NC Asignada (una vez) ──
                 cliente_val  = ""

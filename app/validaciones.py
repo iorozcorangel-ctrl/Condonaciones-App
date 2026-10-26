@@ -239,12 +239,34 @@ def validar_archivos(df_tab, df_bi):
     solo_tab = set_tab - set_bi
     solo_bi  = set_bi - set_tab
 
-    for c in solo_tab:
-        if c:
-            errores.append(f"Un Contenedor no viene mencionado en uno de los archivos: '{c}' — No encontrado en Archivo BI")
-    for c in solo_bi:
-        if c:
-            errores.append(f"Un Contenedor no viene mencionado en uno de los archivos: '{c}' — No encontrado en Tabulador Comercial")
+    # Regla de cruce (confirmada con el usuario):
+    # - El archivo con MENOS contenedores debe venir completo en el otro.
+    #   Si no (o si traen la misma cantidad pero con números distintos) → se DETIENE.
+    # - Si el chico sí está completo en el grande, solo cambia la cantidad →
+    #   alerta informativa y se continúa SOLO con los contenedores que coinciden.
+    if solo_tab or solo_bi:
+        tot_txt = (f"Total contenedores — Tabulador Comercial: {len(set_tab)} · "
+                   f"Archivo BI: {len(set_bi)}.")
+        if len(set_tab) == len(set_bi) or (solo_tab and solo_bi):
+            if solo_tab:
+                errores.append("Los contenedores no coinciden entre archivos. Del Tabulador Comercial "
+                               "no se encontraron en el Archivo BI: " + ", ".join(sorted(solo_tab)))
+            if solo_bi:
+                errores.append("Los contenedores no coinciden entre archivos. Del Archivo BI "
+                               "no se encontraron en el Tabulador Comercial: " + ", ".join(sorted(solo_bi)))
+            errores.append(tot_txt + " Corrige los archivos y vuelve a subirlos.")
+        else:
+            if solo_bi:
+                advertencias.append(
+                    "La cantidad de contenedores es distinta entre archivos. Vienen solo en el "
+                    "Archivo BI (no se analizarán): " + ", ".join(sorted(solo_bi)) + ". " + tot_txt)
+            if solo_tab:
+                advertencias.append(
+                    "La cantidad de contenedores es distinta entre archivos. Vienen solo en el "
+                    "Tabulador Comercial (no se analizarán): " + ", ".join(sorted(solo_tab)) + ". " + tot_txt)
+            comunes = set_tab & set_bi
+            df_tab = df_tab[df_tab[col_tab].isin(comunes)].copy()
+            df_bi  = df_bi[df_bi[col_bi].isin(comunes)].copy()
 
     if errores:
         return None, None, errores, advertencias

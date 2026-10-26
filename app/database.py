@@ -118,7 +118,8 @@ def eliminar_usuario(usuario_id: str):
 # ════════════════════════════════════════════════════════════════
 
 def registrar_nc(numero_nc: str, usuario_id: str, usuario_nombre: str,
-                 contenedores: list, facturas: list, monto_total: float):
+                 contenedores: list, facturas: list, monto_total: float,
+                 fecha_solicitud_nc=None):
     """
     Registra una NC en el historial y sus detalles.
     contenedores: lista de strings con números de contenedor
@@ -128,13 +129,26 @@ def registrar_nc(numero_nc: str, usuario_id: str, usuario_nombre: str,
         db = get_client()
 
         # Insertar en historial_nc
-        res = db.table("historial_nc").insert({
+        fila = {
             "numero_nc":          numero_nc,
             "usuario_id":         usuario_id,
             "usuario_nombre":     usuario_nombre,
             "total_contenedores": len(contenedores),
             "monto_total":        monto_total,
-        }).execute()
+        }
+        if fecha_solicitud_nc:
+            fila["fecha_solicitud_nc"] = (fecha_solicitud_nc.isoformat()
+                                          if hasattr(fecha_solicitud_nc, "isoformat")
+                                          else str(fecha_solicitud_nc))
+        try:
+            res = db.table("historial_nc").insert(fila).execute()
+        except Exception as e:
+            # Si aún no se corrió el SQL (falta la columna), guardar sin ella
+            if "fecha_solicitud_nc" in fila and "fecha_solicitud_nc" in str(e):
+                fila.pop("fecha_solicitud_nc")
+                res = db.table("historial_nc").insert(fila).execute()
+            else:
+                raise
 
         if not res.data:
             return False, "Error al registrar la NC"
@@ -253,9 +267,7 @@ def obtener_historial(limite: int = 2000):
     """Retorna el historial de NCs ordenado por fecha descendente."""
     try:
         db = get_client()
-        res = db.table("historial_nc").select(
-            "id, numero_nc, usuario_nombre, fecha_creacion, total_contenedores, monto_total"
-        ).order("fecha_creacion", desc=True).limit(limite).execute()
+        res = db.table("historial_nc").select("*").order("fecha_creacion", desc=True).limit(limite).execute()
         return res.data or []
     except Exception:
         return []

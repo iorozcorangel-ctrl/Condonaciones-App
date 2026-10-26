@@ -1811,12 +1811,21 @@ with nav[1]:
         if not pag_regs:
             st.info("No se encontraron registros con los filtros aplicados.")
         else:
+            # Fecha de solicitud por NC según Gestión NC (respaldo para registros viejos)
+            _fsol_gestion = {}
+            for _a in _cached_nc_asignaciones():
+                _k = str(_a.get("nc_externo") or "").strip().upper().replace(" ", "")
+                if _k and _a.get("fecha_solicitud") and _k not in _fsol_gestion:
+                    _fsol_gestion[_k] = _a["fecha_solicitud"]
             for reg in pag_regs:
                 _f_an = _fecha_mx(reg.get("fecha_creacion"))
                 fecha_str = _f_an.strftime("%d/%m/%Y") if _f_an else "—"
                 fecha_hora_str = fecha_hora_mx(reg.get("fecha_creacion"))
                 try:
-                    _fs = reg.get("fecha_solicitud_nc")
+                    # Si el registro no la trae (análisis anteriores al 20/10/2026),
+                    # se toma la fecha de solicitud capturada en Gestión NC
+                    _fs = reg.get("fecha_solicitud_nc") or _fsol_gestion.get(
+                        str(reg.get("numero_nc") or "").strip().upper().replace(" ", ""))
                     fsol_str = date.fromisoformat(str(_fs)[:10]).strftime("%d/%m/%Y") if _fs else "—"
                 except Exception:
                     fsol_str = "—"

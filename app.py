@@ -740,6 +740,9 @@ with nav[0]:
         st.markdown("<div class='sec-hdr'>Archivos de Entrada</div>",
                     unsafe_allow_html=True)
         ukey = st.session_state["uploader_key"]
+        if st.session_state.get("errores_carga"):
+            st.error("⛔ Se detuvo el análisis. Corrige y vuelve a subir los archivos:\n\n" +
+                     "\n".join(f"- {e}" for e in st.session_state["errores_carga"]))
         fa1, fa2 = st.columns(2)
         with fa1:
             f_tab = st.file_uploader("📋 Tabulador Comercial",
@@ -747,6 +750,7 @@ with nav[0]:
                                       key=f"tab_{ukey}",
                                       disabled=bloqueado)
             if f_tab:
+                st.session_state["errores_carga"] = []
                 try:
                     st.session_state["df_tab"] = pd.read_excel(f_tab)
                     st.success(f"✔ {f_tab.name}")
@@ -912,8 +916,9 @@ with nav[0]:
                 )
 
             if errores:
-                for e in errores:
-                    st.error(e)
+                # Se guardan para mostrarlos DESPUÉS del rerun (antes se
+                # borraban al instante y el usuario no alcanzaba a leerlos)
+                st.session_state["errores_carga"] = list(errores)
                 st.session_state["df_tab"]       = None
                 st.session_state["df_bi"]        = None
                 st.session_state["reporte_bytes"] = None
@@ -1484,7 +1489,8 @@ with nav[0]:
             # del script (p. ej. `for nc in todas:` en Gestión NC), lo que guardaba
             # un diccionario completo como número de NC en el Historial.
             def on_download(nc_c=str(nc), df_c=df_bv, montos_c=montos,
-                            uid_c=usuario["id"], unombre_c=nombre_user):
+                            uid_c=usuario["id"], unombre_c=nombre_user,
+                            fsol_c=fecha_sol):
                 if not st.session_state["nc_registrada"]:
                     contenedores_list = df_c[COL_BI["contenedor"]].tolist()
                     facturas_list = (df_c[COL_BI["no_factura"]].tolist()
@@ -1497,7 +1503,8 @@ with nav[0]:
                         usuario_nombre=unombre_c,
                         contenedores=contenedores_list,
                         facturas=facturas_list,
-                        monto_total=monto_total
+                        monto_total=monto_total,
+                        fecha_solicitud_nc=fsol_c
                     )
                     if ok_reg:
                         st.session_state["nc_registrada"] = True
@@ -1701,10 +1708,10 @@ with nav[1]:
                                           key="hist_usuario")
         with sf3:
             col_f1, col_f2 = st.columns(2)
-            fecha_desde = col_f1.date_input("Desde", value=None,
+            fecha_desde = col_f1.date_input("Analizada desde", value=None,
                                              key="hist_desde",
                                              format="DD/MM/YYYY")
-            fecha_hasta = col_f2.date_input("Hasta", value=None,
+            fecha_hasta = col_f2.date_input("Analizada hasta", value=None,
                                              key="hist_hasta",
                                              format="DD/MM/YYYY")
 
@@ -1738,15 +1745,28 @@ with nav[1]:
             historial = [r for r in historial
                         if r["usuario_nombre"] == filtro_usuario]
 
+        # Fechas en hora de MÉXICO (antes se usaba la fecha UTC y un análisis
+        # descargado después de las 6 p.m. aparecía con el día siguiente)
+        def _fecha_mx(iso):
+            if not iso:
+                return None
+            try:
+                dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+                return dt.astimezone(ZONA_MX).date()
+            except Exception:
+                return None
+
         if fecha_desde:
             historial = [r for r in historial
-                        if r["fecha_creacion"] and
-                        r["fecha_creacion"][:10] >= fecha_desde.isoformat()]
+                        if _fecha_mx(r.get("fecha_creacion")) and
+                        _fecha_mx(r.get("fecha_creacion")) >= fecha_desde]
 
         if fecha_hasta:
             historial = [r for r in historial
-                        if r["fecha_creacion"] and
-                        r["fecha_creacion"][:10] <= fecha_hasta.isoformat()]
+                        if _fecha_mx(r.get("fecha_creacion")) and
+                        _fecha_mx(r.get("fecha_creacion")) <= fecha_hasta]
 
         # ── Paginación ────────────────────────────────────────
         REGISTROS_POR_PAG = 20
@@ -1792,15 +1812,24 @@ with nav[1]:
             st.info("No se encontraron registros con los filtros aplicados.")
         else:
             for reg in pag_regs:
-                fecha_str = reg["fecha_creacion"][:10] if reg["fecha_creacion"] else "—"
+                _f_an = _fecha_mx(reg.get("fecha_creacion"))
+                fecha_str = _f_an.strftime("%d/%m/%Y") if _f_an else "—"
+                fecha_hora_str = fecha_hora_mx(reg.get("fecha_creacion"))
+                try:
+                    _fs = reg.get("fecha_solicitud_nc")
+                    fsol_str = date.fromisoformat(str(_fs)[:10]).strftime("%d/%m/%Y") if _fs else "—"
+                except Exception:
+                    fsol_str = "—"
                 monto_str = f"${reg['monto_total']:,.2f}" if reg["monto_total"] else "$0.00"
 
                 with st.expander(
-                    f"📄 {reg['numero_nc']}  —  {fecha_str}  —  {reg['usuario_nombre']}  —  {monto_str}"
+                    f"📄 {reg['numero_nc']}  —  Analizada {fecha_str}  —  Solicitud NC {fsol_str}  —  "
+                    f"{reg['usuario_nombre']}  —  {monto_str}"
                 ):
                     col_info, col_acc = st.columns([3, 1])
                     with col_info:
-                        st.write(f"**Fecha:** {fecha_str}")
+                        st.write(f"**Fecha de análisis:** {fecha_hora_str}")
+                        st.write(f"**Fecha de solicitud NC:** {fsol_str}")
                         st.write(f"**Usuario:** {reg['usuario_nombre']}")
                         st.write(f"**Contenedores:** {reg['total_contenedores']}")
                         st.write(f"**Monto Total:** {monto_str}")

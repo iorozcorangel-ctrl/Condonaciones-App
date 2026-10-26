@@ -1,1521 +1,3386 @@
 """
 ================================================================
-  MÓDULO DE BASE DE DATOS — Supabase
-  Maneja todas las operaciones con la base de datos
+  SISTEMA DE CONDONACIONES — TERMINAL PORTUARIA PACÍFICO
+  Versión Web — Streamlit + Supabase
 ================================================================
 """
 
 import streamlit as st
-from supabase import create_client, Client
+import pandas as pd
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
+import io
+import calendar
 import hashlib
-import secrets
-import re
-from datetime import datetime
+
+ZONA_MX = ZoneInfo("America/Mexico_City")
+
+def hoy_mx():
+    """Retorna la fecha actual en zona horaria de México."""
+    return datetime.now(ZONA_MX).date()
 
 
-def get_client() -> Client:
-    url  = st.secrets["SUPABASE_URL"]
-    key  = st.secrets["SUPABASE_SERVICE_KEY"]
-    return create_client(url, key)
+# ── Wrappers con caché corto para evitar golpear Supabase en cada
+#    rerun de Streamlit (todas las pestañas se ejecutan siempre,
+#    aunque no estén visibles, así que cachear reduce mucho la carga) ──
+@st.cache_data(ttl=8, show_spinner=False)
+def _cached_nc_asignaciones():
+    return obtener_nc_asignaciones()
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _cached_usuarios():
+    return obtener_usuarios()
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_nc_motivos():
+    return obtener_nc_motivos()
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_nc_estatus():
+    return obtener_nc_estatus()
+
+@st.cache_data(ttl=15, show_spinner=False)
+def _cached_transferencias_recintos():
+    return obtener_transferencias_recintos()
+
+@st.cache_data(ttl=30, show_spinner=False)
+def _cached_transferencias_navieras():
+    return obtener_transferencias_navieras()
+
+@st.cache_data(ttl=8, show_spinner=False)
+def _cached_transferencias_casos():
+    return obtener_transferencias_casos()
 
 
-# ── Hash de contraseña ──────────────────────────────────────────
-def hash_password(password: str) -> str:
-    salt = "condonaciones_salt_2026"
-    return hashlib.sha256(f"{salt}{password}".encode()).hexdigest()
+@st.cache_data(ttl=20, show_spinner=False)
+def _cached_dias_especiales():
+    return obtener_dias_especiales_db()
+
+@st.cache_data(ttl=10, show_spinner=False)
+def _cached_solicitudes_perfil_pendientes():
+    return obtener_solicitudes_perfil(estado="pendiente")
 
 
-def verificar_password(password: str, hash_guardado: str) -> bool:
-    return hash_password(password) == hash_guardado
+def invalidar_cache_nc():
+    """Llamar después de crear/editar/eliminar una NC para refrescar la vista al instante."""
+    _cached_nc_asignaciones.clear()
 
 
-# ════════════════════════════════════════════════════════════════
-#   USUARIOS
-# ════════════════════════════════════════════════════════════════
+def invalidar_cache_transferencias():
+    """Llamar tras crear/aprobar/rechazar un recinto, una naviera o un caso."""
+    _cached_transferencias_recintos.clear()
+    _cached_transferencias_navieras.clear()
+    _cached_transferencias_casos.clear()
 
-def login_usuario(username: str, password: str):
-    """Retorna el usuario si las credenciales son correctas, None si no."""
+
+def estado_legible_nc(nc: dict) -> str:
+    """Texto de estado para mostrar junto a una NC: 'Concluido' si ya se cerró
+    (independientemente del estatus con el que haya quedado), o su estatus normal."""
+    if nc.get("concluida"):
+        return "Concluido"
+    return nc.get("estatus") or "—"
+
+
+def fecha_hora_mx(iso_str) -> str:
+    """Convierte un timestamp guardado en Supabase a texto legible en hora de
+    México (DD/MM/AAAA HH:MM). Si no hay valor, regresa 'Pendiente'."""
+    if not iso_str:
+        return "Pendiente"
     try:
-        db = get_client()
-        res = db.table("usuarios").select("*").eq("username", username).eq("activo", True).execute()
-        if not res.data:
-            return None
-        usuario = res.data[0]
-        if verificar_password(password, usuario["password_hash"]):
-            return usuario
-        return None
-    except Exception as e:
-        st.error(f"Error de conexión: {e}")
-        return None
-
-
-def obtener_usuarios():
-    """Retorna todos los usuarios activos."""
-    try:
-        db = get_client()
-        # select("*") para incluir en_rotacion / orden_rotacion si ya existen
-        # (si aún no se corrió el SQL, no truena: simplemente no vienen)
-        res = db.table("usuarios").select("*").order("fecha_creacion").execute()
-        return res.data or []
-    except Exception:
-        return []
-
-
-def crear_usuario(username: str, password: str, nombre_completo: str, rol: str):
-    """Crea un nuevo usuario. Retorna (True, msg) o (False, error)."""
-    try:
-        db = get_client()
-        # Verificar que no exista
-        existe = db.table("usuarios").select("id").eq("username", username).execute()
-        if existe.data:
-            return False, f"El usuario '{username}' ya existe"
-        db.table("usuarios").insert({
-            "username":        username,
-            "password_hash":   hash_password(password),
-            "nombre_completo": nombre_completo,
-            "rol":             rol,
-            "activo":          True,
-        }).execute()
-        return True, "Usuario creado correctamente"
-    except Exception as e:
-        return False, str(e)
-
-
-def cambiar_password(usuario_id: str, nueva_password: str):
-    """Cambia la contraseña de un usuario."""
-    try:
-        db = get_client()
-        db.table("usuarios").update({
-            "password_hash": hash_password(nueva_password)
-        }).eq("id", usuario_id).execute()
-        return True, "Contraseña actualizada"
-    except Exception as e:
-        return False, str(e)
-
-
-def toggle_usuario(usuario_id: str, activo: bool):
-    """Activa o desactiva un usuario."""
-    try:
-        db = get_client()
-        db.table("usuarios").update({"activo": activo}).eq("id", usuario_id).execute()
-        return True
-    except Exception:
-        return False
-
-
-def eliminar_usuario(usuario_id: str):
-    """Elimina un usuario permanentemente."""
-    try:
-        db = get_client()
-        db.table("usuarios").delete().eq("id", usuario_id).execute()
-        return True
-    except Exception:
-        return False
-
-
-# ════════════════════════════════════════════════════════════════
-#   HISTORIAL DE NCs
-# ════════════════════════════════════════════════════════════════
-
-def registrar_nc(numero_nc: str, usuario_id: str, usuario_nombre: str,
-                 contenedores: list, facturas: list, monto_total: float,
-                 fecha_solicitud_nc=None):
-    """
-    Registra una NC en el historial y sus detalles.
-    contenedores: lista de strings con números de contenedor
-    facturas: lista de strings con números de factura
-    """
-    try:
-        db = get_client()
-
-        # Insertar en historial_nc
-        fila = {
-            "numero_nc":          numero_nc,
-            "usuario_id":         usuario_id,
-            "usuario_nombre":     usuario_nombre,
-            "total_contenedores": len(contenedores),
-            "monto_total":        monto_total,
-        }
-        if fecha_solicitud_nc:
-            fila["fecha_solicitud_nc"] = (fecha_solicitud_nc.isoformat()
-                                          if hasattr(fecha_solicitud_nc, "isoformat")
-                                          else str(fecha_solicitud_nc))
-        try:
-            res = db.table("historial_nc").insert(fila).execute()
-        except Exception as e:
-            # Si aún no se corrió el SQL (falta la columna), guardar sin ella
-            if "fecha_solicitud_nc" in fila and "fecha_solicitud_nc" in str(e):
-                fila.pop("fecha_solicitud_nc")
-                res = db.table("historial_nc").insert(fila).execute()
-            else:
-                raise
-
-        if not res.data:
-            return False, "Error al registrar la NC"
-
-        nc_id = res.data[0]["id"]
-
-        # Insertar detalles por contenedor — solo filas con contenedor válido
-        detalles = []
-        for i, cont in enumerate(contenedores):
-            # Limpiar contenedor
-            cont_limpio = str(cont).strip().upper() if cont else ""
-            if not cont_limpio or cont_limpio.lower() in ("nan", "none", ""):
-                continue
-
-            # Limpiar factura — quitar decimales si viene como float
-            factura = facturas[i] if i < len(facturas) else None
-            if factura is not None:
-                factura_str = str(factura).strip()
-                if factura_str.lower() in ("nan", "none", "", "0", "0.0"):
-                    factura_str = None
-                elif factura_str.endswith(".0"):
-                    factura_str = factura_str[:-2]
-            else:
-                factura_str = None
-
-            detalles.append({
-                "historial_nc_id": nc_id,
-                "numero_nc":       numero_nc,
-                "contenedor":      cont_limpio,
-                "numero_factura":  factura_str,
-            })
-
-        if detalles:
-            db.table("detalle_nc").insert(detalles).execute()
-
-        return True, "NC registrada correctamente"
-    except Exception as e:
-        return False, str(e)
-
-
-def verificar_duplicados(contenedores: list, facturas: list):
-    """
-    Verifica si alguna factura o contenedor ya existe en otra NC registrada.
-    Retorna lista de duplicados encontrados.
-    """
-    duplicados = []
-    try:
-        db = get_client()
-
-        # Limpiar facturas — eliminar nulos, nan, None, vacíos
-        facturas_limpias = []
-        for f in facturas:
-            if f is None:
-                continue
-            s = str(f).strip()
-            if s.lower() in ("nan", "none", "", "0", "0.0"):
-                continue
-            # Limpiar decimales de números que vienen como float
-            if s.endswith(".0"):
-                s = s[:-2]
-            facturas_limpias.append(s)
-
-        # Limpiar contenedores
-        contenedores_limpios = [str(c).strip().upper()
-                                for c in contenedores
-                                if c and str(c).strip().lower() not in ("nan","none","")]
-
-        # ── Verificar por factura ──────────────────────────────
-        facturas_unicas = list(set(facturas_limpias))
-        for factura in facturas_unicas:
-            res = db.table("detalle_nc").select(
-                "numero_factura, numero_nc, fecha_creacion, contenedor"
-            ).eq("numero_factura", factura).execute()
-
-            if res.data:
-                for reg in res.data:
-                    duplicados.append({
-                        "tipo":        "Factura",
-                        "valor":       factura,
-                        "nc_anterior": reg["numero_nc"],
-                        "contenedor":  reg.get("contenedor", ""),
-                        "fecha":       reg["fecha_creacion"][:10] if reg["fecha_creacion"] else ""
-                    })
-
-        # ── Verificar por contenedor ───────────────────────────
-        contenedores_unicos = list(set(contenedores_limpios))
-        for cont in contenedores_unicos:
-            res = db.table("detalle_nc").select(
-                "contenedor, numero_nc, fecha_creacion, numero_factura"
-            ).eq("contenedor", cont).execute()
-
-            if res.data:
-                for reg in res.data:
-                    # Evitar duplicar si ya se detectó por factura
-                    ya_registrado = any(
-                        d["nc_anterior"] == reg["numero_nc"] and d["valor"] == cont
-                        for d in duplicados
-                    )
-                    if not ya_registrado:
-                        duplicados.append({
-                            "tipo":        "Contenedor",
-                            "valor":       cont,
-                            "nc_anterior": reg["numero_nc"],
-                            "contenedor":  cont,
-                            "fecha":       reg["fecha_creacion"][:10] if reg["fecha_creacion"] else ""
-                        })
-
-        return duplicados
-
-    except Exception as e:
-        # Retornar el error para que pueda mostrarse en la interfaz
-        return [{"tipo": "ERROR", "valor": str(e), "nc_anterior": "", "contenedor": "", "fecha": ""}]
-
-
-def obtener_historial(limite: int = 2000):
-    """Retorna el historial de NCs ordenado por fecha descendente."""
-    try:
-        db = get_client()
-        res = db.table("historial_nc").select("*").order("fecha_creacion", desc=True).limit(limite).execute()
-        return res.data or []
-    except Exception:
-        return []
-
-
-def obtener_detalle_nc(nc_id: str):
-    """Retorna el detalle de contenedores y facturas de una NC."""
-    try:
-        db = get_client()
-        res = db.table("detalle_nc").select(
-            "contenedor, numero_factura"
-        ).eq("historial_nc_id", nc_id).execute()
-        return res.data or []
-    except Exception:
-        return []
-
-
-def eliminar_nc(nc_id: str):
-    """Elimina una NC y su detalle (solo admin)."""
-    try:
-        db = get_client()
-        db.table("historial_nc").delete().eq("id", nc_id).execute()
-        return True
-    except Exception:
-        return False
-
-
-# ════════════════════════════════════════════════════════════════
-#   PERFILES DE CONDONACIÓN
-# ════════════════════════════════════════════════════════════════
-
-def obtener_perfiles():
-    """Retorna todos los perfiles ordenados: default primero."""
-    try:
-        db = get_client()
-        res = db.table("perfiles").select("*").order("es_default", desc=True).order("fecha_creacion").execute()
-        data = res.data or []
-        # Convertir a formato compatible con el sistema actual
-        return [{
-            "id":             p["id"],
-            "nombre":         p["nombre"],
-            "es_default":     p["es_default"],
-            "regla1_activa":  p["regla1_activa"],
-            "regla2_activa":  p["regla2_activa"],
-            "dias_previo":    p["dias_previo"],
-            "dias_ferromex":  p["dias_ferromex"],
-            "dias_carretero": p["dias_carretero"],
-            "na_previo":      p.get("na_previo", False),
-            "na_ffcc":        p.get("na_ffcc", False),
-            "na_carretero":   p.get("na_carretero", False),
-        } for p in data]
-    except Exception:
-        # Fallback al perfil default si falla la conexión
-        return [{
-            "nombre": "Default (Sin modificaciones)",
-            "es_default": True,
-            "regla1_activa": True,
-            "regla2_activa": True,
-            "dias_previo": 3,
-            "dias_ferromex": 3,
-            "dias_carretero": 2,
-        }]
-
-
-def crear_perfil_db(perfil: dict):
-    """Crea un nuevo perfil en la base de datos."""
-    try:
-        db = get_client()
-        res = db.table("perfiles").insert({
-            "nombre":         perfil["nombre"],
-            "es_default":     False,
-            "regla1_activa":  perfil.get("regla1_activa", True),
-            "regla2_activa":  perfil.get("regla2_activa", True),
-            "dias_previo":    perfil.get("dias_previo", 3),
-            "dias_ferromex":  perfil.get("dias_ferromex", 3),
-            "dias_carretero": perfil.get("dias_carretero", 2),
-            "na_previo":      perfil.get("na_previo", False),
-            "na_ffcc":        perfil.get("na_ffcc", False),
-            "na_carretero":   perfil.get("na_carretero", False),
-        }).execute()
-        return True, res.data[0] if res.data else {}
-    except Exception as e:
-        return False, str(e)
-
-
-def modificar_perfil_db(perfil_id: str, perfil: dict):
-    """Modifica un perfil existente."""
-    try:
-        db = get_client()
-        db.table("perfiles").update({
-            "nombre":         perfil["nombre"],
-            "regla1_activa":  perfil.get("regla1_activa", True),
-            "regla2_activa":  perfil.get("regla2_activa", True),
-            "dias_previo":    perfil.get("dias_previo", 3),
-            "dias_ferromex":  perfil.get("dias_ferromex", 3),
-            "dias_carretero": perfil.get("dias_carretero", 2),
-            "na_previo":      perfil.get("na_previo", False),
-            "na_ffcc":        perfil.get("na_ffcc", False),
-            "na_carretero":   perfil.get("na_carretero", False),
-        }).eq("id", perfil_id).execute()
-        return True
-    except Exception:
-        return False
-
-
-def eliminar_perfil_db(perfil_id: str):
-    """Elimina un perfil de la base de datos."""
-    try:
-        db = get_client()
-        db.table("perfiles").delete().eq("id", perfil_id).execute()
-        return True
-    except Exception:
-        return False
-
-
-def guardar_ultimo_perfil_db(usuario_id: str, perfil_id: str):
-    """Guarda el último perfil usado por el usuario."""
-    try:
-        db = get_client()
-        # Usar upsert en tabla usuarios para guardar ultimo_perfil_id
-        db.table("usuarios").update(
-            {"ultimo_perfil_id": perfil_id}
-        ).eq("id", usuario_id).execute()
-        return True
-    except Exception:
-        return False
-
-
-def obtener_ultimo_perfil_db(usuario_id: str):
-    """Obtiene el último perfil usado por el usuario."""
-    try:
-        db = get_client()
-        res = db.table("usuarios").select("ultimo_perfil_id").eq("id", usuario_id).execute()
-        if res.data and res.data[0].get("ultimo_perfil_id"):
-            return res.data[0]["ultimo_perfil_id"]
-        return None
-    except Exception:
-        return None
-
-
-# ════════════════════════════════════════════════════════════════
-#   GESTIÓN DE SESIONES PERSISTENTES
-# ════════════════════════════════════════════════════════════════
-
-DIAS_MAX_SESION = 5   # Duración absoluta máxima de la sesión (no se extiende)
-MAX_SESIONES    = 3   # Máximo de sesiones simultáneas por usuario
-
-
-def crear_sesion(usuario_id: str, username: str) -> str:
-    """
-    Crea una sesión en BD con expiración ABSOLUTA de DIAS_MAX_SESION días
-    (no se extiende con la actividad). Además de esto, la persistencia real
-    del navegador depende de una cookie de sesión (sin fecha de expiración)
-    que el propio navegador borra al cerrarse por completo.
-    """
-    import secrets
-    from datetime import datetime, timedelta
-    try:
-        db    = get_client()
-        token = secrets.token_hex(32)
-        ahora = datetime.utcnow()
-        expira = ahora + timedelta(days=DIAS_MAX_SESION)
-
-        # Limpiar sesiones ya vencidas del usuario
-        db.table("sesiones").delete().eq(
-            "usuario_id", usuario_id
-        ).lt("expira_en", ahora.isoformat()).execute()
-
-        # Verificar cuántas sesiones activas quedan
-        res = db.table("sesiones").select("id, fecha_creacion").eq(
-            "usuario_id", usuario_id
-        ).order("fecha_creacion", desc=False).execute()
-        sesiones_activas = res.data or []
-
-        # Si ya hay MAX_SESIONES, eliminar la más antigua
-        while len(sesiones_activas) >= MAX_SESIONES:
-            mas_antigua = sesiones_activas.pop(0)
-            db.table("sesiones").delete().eq("id", mas_antigua["id"]).execute()
-
-        db.table("sesiones").insert({
-            "usuario_id":       usuario_id,
-            "token":            token,
-            "username":         username,
-            "expira_en":        expira.isoformat(),
-            "ultima_actividad": ahora.isoformat(),
-        }).execute()
-        return token
-    except Exception:
-        return ""
-
-
-def verificar_sesion(token: str):
-    """
-    Verifica un token contra su expiración ABSOLUTA (fija desde la creación,
-    máximo DIAS_MAX_SESION días). No se extiende con la actividad.
-    """
-    from datetime import datetime
-    if not token:
-        return None
-    try:
-        db  = get_client()
-        res = db.table("sesiones").select(
-            "id, usuario_id, username, expira_en"
-        ).eq("token", token).execute()
-        if not res.data:
-            return None
-        sesion = res.data[0]
-
-        ahora  = datetime.utcnow()
-        expira = datetime.fromisoformat(
-            (sesion.get("expira_en") or "").replace("Z", "")
-        )
-        if ahora > expira:
-            db.table("sesiones").delete().eq("token", token).execute()
-            return None
-
-        # Solo actualiza el timestamp informativo, no la expiración
-        db.table("sesiones").update({
-            "ultima_actividad": ahora.isoformat(),
-        }).eq("token", token).execute()
-
-        res2 = db.table("usuarios").select("*").eq(
-            "id", sesion["usuario_id"]
-        ).eq("activo", True).execute()
-        return res2.data[0] if res2.data else None
-    except Exception:
-        return None
-
-
-def obtener_inicio_sesion(token: str):
-    """
-    Regresa la fecha/hora (datetime con zona UTC) en que se creó la sesión
-    del token, o None si no se puede leer. Sirve para mostrar "Ingreso:
-    fecha y hora" aun cuando la sesión se restaura al recargar la página.
-    """
-    from datetime import datetime, timezone
-    if not token:
-        return None
-    try:
-        db  = get_client()
-        res = db.table("sesiones").select("fecha_creacion").eq("token", token).execute()
-        if not res.data or not res.data[0].get("fecha_creacion"):
-            return None
-        dt = datetime.fromisoformat(str(res.data[0]["fecha_creacion"]).replace("Z", "+00:00"))
+        limpio = str(iso_str).replace("Z", "+00:00")
+        dt = datetime.fromisoformat(limpio)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
+            dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+        return dt.astimezone(ZONA_MX).strftime("%d/%m/%Y %H:%M")
     except Exception:
-        return None
+        return str(iso_str)[:16]
 
 
-def eliminar_sesion(token: str):
-    """Elimina una sesión (logout)."""
-    if not token:
-        return
+from app.config import COL_BI, COL_TAB
+# Perfiles ahora vienen de Supabase via database.py
+from app.calendario import get_festivos_oficiales, nombre_festivo
+from app import asignacion_masiva as _am
+from app.validaciones import (validar_archivos, aplicar_regla1, aplicar_regla2,
+                               calcular_desfases, calcular_montos,
+                               normalizar_contenedor, to_date,
+                               validar_formato_nc, normalizar_numero_nc)
+from app.reporte import generar_reporte
+from app.database import (login_usuario, obtener_usuarios, crear_usuario,
+                           obtener_inicio_sesion,
+                           actualizar_rotacion_usuario, obtener_config_app,
+                           guardar_config_app,
+                           crear_solicitud_perfil, obtener_solicitudes_perfil,
+                           resolver_solicitud_perfil,
+                           obtener_solicitudes_perfil_sin_notificar,
+                           marcar_solicitudes_perfil_notificadas,
+                           obtener_dias_especiales_db, agregar_dia_especial_db,
+                           quitar_dia_especial_db, limpiar_dias_especiales_db,
+                           cambiar_password, toggle_usuario, eliminar_usuario,
+                           registrar_nc, verificar_duplicados,
+                           obtener_historial, obtener_detalle_nc, eliminar_nc,
+                           obtener_perfiles, crear_perfil_db, modificar_perfil_db,
+                           eliminar_perfil_db, guardar_ultimo_perfil_db,
+                           obtener_ultimo_perfil_db,
+                           guardar_previo_borrador, cargar_borradores_previo,
+                           eliminar_borradores_nc, hay_borrador_activo,
+                           extraer_contenedores, obtener_nc_motivos, crear_nc_motivo,
+                           editar_nc_motivo, eliminar_nc_motivo,
+                           obtener_nc_estatus, crear_nc_estatus, editar_nc_estatus,
+                           eliminar_nc_estatus,
+                           crear_nc_asignacion, obtener_nc_asignaciones,
+                           obtener_nc_por_id, actualizar_nc_asignacion,
+                           obtener_nc_hijas, vincular_nc_existente, desvincular_nc,
+                           fusionar_nc, eliminar_nc_asignacion,
+                           reasignar_nc, inhabilitar_nc, marcar_seguimiento_nc,
+                           concluir_nc, reabrir_nc, buscar_nc_asignaciones,
+                           actualizar_herencia_analisis,
+                           obtener_notificaciones_pendientes,
+                           marcar_notificaciones_vistas,
+                           crear_nc_notificacion,
+                           verificar_contenedores_en_nc,
+                           registrar_duplicado_revisado,
+                           obtener_transferencias_recintos, proponer_transferencias_recinto,
+                           aprobar_transferencias_recinto, rechazar_transferencias_recinto,
+                           obtener_transferencias_navieras, crear_transferencias_naviera,
+                           eliminar_transferencias_naviera,
+                           crear_transferencias_notificacion,
+                           obtener_transferencias_notificaciones_pendientes,
+                           marcar_transferencias_notificaciones_vistas,
+                           registrar_transferencia_auto,
+                           obtener_transferencias_casos,
+                           obtener_transferencias_detalle)
+from app.transferencias import procesar_transferencias
+from app.transferencias_reporte import generar_documento_transferencias
+from app.transferencias_config import (normalizar_texto as normalizar_texto_transferencias,
+                                        N4_FILA_ENCABEZADO)
+
+st.set_page_config(
+    page_title="Sistema de Condonaciones",
+    page_icon="🚢",
+    layout="wide"
+)
+
+st.markdown("""
+<style>
+.login-stamp{position:fixed;top:14px;left:18px;z-index:999999;pointer-events:none;
+  font-size:12px;color:inherit;opacity:.5;letter-spacing:.2px;}
+.topbar{background:#E65100;padding:16px 24px;border-radius:8px;margin-bottom:20px;}
+.topbar h1{color:white;font-size:22px;margin:0;font-weight:600;}
+.topbar p{color:#FFCC80;font-size:13px;margin:4px 0 0 0;}
+.sec-hdr{background:#E65100;color:white;padding:8px 14px;border-radius:6px;
+         font-weight:600;font-size:14px;margin-bottom:12px;}
+.admin-hdr{background:#BF360C;color:white;padding:8px 14px;border-radius:6px;
+           font-weight:600;font-size:14px;margin-bottom:12px;}
+.badge-admin{background:#BF360C;color:white;padding:2px 10px;border-radius:20px;
+             font-size:12px;font-weight:600;}
+.badge-user{background:#E65100;color:white;padding:2px 10px;border-radius:20px;
+            font-size:12px;font-weight:600;}
+</style>
+""", unsafe_allow_html=True)
+
+# ── Estado inicial ──────────────────────────────────────────────
+def init():
+    defs = {
+        "usuario":           None,       # dict con datos del usuario logueado
+        "df_tab":            None,
+        "df_bi":             None,
+        "df_tab_v":          None,
+        "df_bi_v":           None,
+        "perfiles":          [],
+        "perfil_idx":        0,
+        "perfiles_cargados": False,
+        "dias_especiales":   set(),
+        "paso":              "inicio",
+        "desfases":          {},
+        "montos":            {},
+        "fecha_solicitud":   None,
+        "nc_cliente":        "",
+        "fecha_revision":    hoy_mx(),
+        "cal_anio":          hoy_mx().year,
+        "cal_mes":           hoy_mx().month,
+        "mostrar_form_perfil": None,
+        "alertas":           [],
+        "uploader_key":      0,
+        "vista":             "analisis",  # analisis | historial | usuarios
+        "cond_manual":       False,
+        "dias_manual_previo": 0,
+        "dias_manual_ffcc":   0,
+        "dias_manual_carr":   0,
+        "nc_reset":          False,
+        "nc_val":            "",
+        "fecha_val":         None,
+        "reporte_bytes":     None,
+        "previo_manual_activo": False,
+        "contadores_previo": {},
+        "paso_previo":       "inicio",
+        "horario_previo":    {},
+        # ── Módulo Transferencias ────────────────────────────────
+        "trans_folio":              "",
+        "trans_responsable":        "",
+        "trans_df_recinto":         None,
+        "trans_df_n4":              None,
+        "trans_uploader_key_rec":   0,
+        "trans_uploader_key_n4":    0,
+        "trans_resultado":          None,   # resultado de procesar_transferencias()
+        "trans_overrides":          {},     # nombre_norm -> codigo elegido por el usuario
+        "trans_reporte_bytes":      None,
+        "trans_guardado":           False,
+        "trans_pag":                1,
+    }
+    for k, v in defs.items():
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+init()
+
+# ── Restaurar sesión desde el token en la URL (?sid=...) ────────
+# Mientras la URL conserve ?sid=..., la sesión se restaura automáticamente
+# al recargar (F5), navegar o volver a abrir la pestaña. El token vence de
+# forma ABSOLUTA a los 5 días (ver DIAS_MAX_SESION en database.py).
+if not st.session_state.get("autenticado"):
     try:
-        db = get_client()
-        db.table("sesiones").delete().eq("token", token).execute()
+        params = st.query_params
+        token  = params.get("sid", "")
+        if token:
+            from app.database import verificar_sesion as _vs
+            usuario_tok = _vs(token)
+            if usuario_tok:
+                st.session_state["autenticado"]   = True
+                st.session_state["usuario"]       = usuario_tok
+                st.session_state["session_token"] = token
+                st.rerun()
+            else:
+                st.query_params.clear()
     except Exception:
         pass
 
+# ════════════════════════════════════════════════════════════════
+#   PANTALLA DE LOGIN
+# ════════════════════════════════════════════════════════════════
+if not st.session_state.get("autenticado") or st.session_state.get("usuario") is None:
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        st.markdown("""
+        <div style='text-align:center;padding:40px 0 20px;'>
+          <div style='color:#E65100;font-size:28px;font-weight:600;margin:0;'>🚢 Sistema de Condonaciones</div>
+          <p style='color:#666;'>Terminal Portuaria Pacífico</p>
+        </div>
+        """, unsafe_allow_html=True)
+
+        with st.form("login"):
+            username = st.text_input("Usuario", placeholder="Ingresa tu usuario")
+            password = st.text_input("Contraseña", type="password")
+            if st.form_submit_button("Entrar", width='stretch'):
+                if not username or not password:
+                    st.warning("Ingresa usuario y contraseña")
+                else:
+                    with st.spinner("Verificando..."):
+                        usuario = login_usuario(username, password)
+                    if usuario:
+                        st.session_state["autenticado"]   = True
+                        st.session_state["usuario"]       = usuario
+                        st.session_state["login_dt"]      = datetime.now(ZONA_MX)
+                        # Crear sesión en BD (expira a los 5 días) y
+                        # guardar el token en la URL para persistencia
+                        from app.database import crear_sesion as _cs
+                        tok = _cs(usuario["id"], usuario["username"])
+                        if tok:
+                            st.session_state["session_token"] = tok
+                            st.query_params["sid"] = tok
+                        st.rerun()
+                    else:
+                        st.error("Usuario o contraseña incorrectos")
+    st.stop()
 
 # ════════════════════════════════════════════════════════════════
-#   BORRADORES DE PREVIO MANUAL
+#   APP PRINCIPAL — Usuario autenticado
 # ════════════════════════════════════════════════════════════════
 
-def guardar_previo_borrador(usuario_id: str, numero_nc: str, contenedor: str,
-                             previo_num: int, fecha_prog: str, fecha_pos: str):
-    """Guarda o actualiza un previo individual en borrador."""
-    try:
-        db = get_client()
-        from datetime import datetime
-        datos = {
-            "usuario_id":           usuario_id,
-            "numero_nc":            numero_nc,
-            "contenedor":           contenedor,
-            "previo_num":           previo_num,
-            "fecha_programacion":   fecha_prog or None,
-            "fecha_posicionamiento": fecha_pos or None,
-            "fecha_actualizacion":  datetime.utcnow().isoformat(),
-        }
-        db.table("borradores_previo").upsert(
-            datos,
-            on_conflict="usuario_id,numero_nc,contenedor,previo_num"
-        ).execute()
-        return True
-    except Exception:
-        return False
+usuario     = st.session_state["usuario"]
+es_admin    = usuario["rol"] == "admin"
 
+# ── Verificar expiración absoluta (5 días) — cada 2 minutos, no en cada
+#    render (evita un round-trip a Supabase por cada clic) ──────────────
+import time as _time
+_ultima_verif = st.session_state.get("_ultima_verif_sesion", 0)
+if st.session_state.get("session_token") and (_time.time() - _ultima_verif > 120):
+    from app.database import verificar_sesion as _vs2
+    _check = _vs2(st.session_state["session_token"])
+    st.session_state["_ultima_verif_sesion"] = _time.time()
+    if not _check:
+        # Sesión vencida (más de 5 días desde el login)
+        st.query_params.clear()
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        st.rerun()
 
-def cargar_borradores_previo(usuario_id: str, numero_nc: str):
-    """Carga todos los borradores de previo para una NC."""
-    try:
-        db = get_client()
-        res = db.table("borradores_previo").select("*").eq(
-            "usuario_id", usuario_id
-        ).eq("numero_nc", numero_nc).order("contenedor").order("previo_num").execute()
-        return res.data or []
-    except Exception:
-        return []
+# ── Cargar perfiles desde Supabase si no están cargados ────────
+if not st.session_state.get("perfiles_cargados", False):
+    perfiles_db = obtener_perfiles()
+    # Deduplicar: si hay más de un Default, conservar solo el primero
+    vistos_default = False
+    perfiles_unicos = []
+    for p in perfiles_db:
+        if p.get("es_default"):
+            if not vistos_default:
+                perfiles_unicos.append(p)
+                vistos_default = True
+        else:
+            perfiles_unicos.append(p)
+    st.session_state["perfiles"] = perfiles_unicos
+    st.session_state["perfiles_cargados"] = True
+    # Restaurar último perfil usado
+    ultimo_id = obtener_ultimo_perfil_db(usuario["id"])
+    if ultimo_id:
+        for i, p in enumerate(perfiles_db):
+            if p.get("id") == ultimo_id:
+                st.session_state["perfil_idx"] = i
+                break
+nombre_user = usuario["nombre_completo"]
+rol_badge   = "badge-admin" if es_admin else "badge-user"
+rol_label   = "Administrador" if es_admin else "Usuario"
 
+# ── Barra superior ──────────────────────────────────────────────
+col_titulo, col_user = st.columns([4, 1])
+with col_titulo:
+    st.markdown("""
+    <div class='topbar'>
+      <div style="font-size:22px;font-weight:600;color:white;margin:0;">🚢 Sistema de Condonaciones</div>
+      <p>Terminal Portuaria · Análisis de Condonaciones</p>
+    </div>
+    """, unsafe_allow_html=True)
+with col_user:
+    st.markdown(f"""
+    <div style='padding:12px;background:var(--background-color);border-radius:8px;
+                border:1px solid #ddd;margin-top:4px;'>
+      <div style='font-size:13px;font-weight:600;'>{nombre_user}</div>
+      <span class='{rol_badge}'>{rol_label}</span>
+    </div>
+    """, unsafe_allow_html=True)
+    if st.button("🚪 Salir", width='stretch'):
+        try:
+            from app.database import eliminar_sesion as _es
+            _es(st.session_state.get("session_token", ""))
+            st.query_params.clear()
+        except Exception:
+            pass
+        for k in list(st.session_state.keys()):
+            del st.session_state[k]
+        st.rerun()
 
-def eliminar_borradores_nc(usuario_id: str, numero_nc: str):
-    """Elimina todos los borradores de una NC al generar el reporte."""
-    try:
-        db = get_client()
-        db.table("borradores_previo").delete().eq(
-            "usuario_id", usuario_id
-        ).eq("numero_nc", numero_nc).execute()
-        return True
-    except Exception:
-        return False
+# ── Sello de fecha/hora de ingreso (arriba a la izquierda, discreto) ──
+if "login_txt" not in st.session_state:
+    _dt = obtener_inicio_sesion(st.session_state.get("session_token", "")) \
+          or st.session_state.get("login_dt")
+    _txt = ""
+    if _dt:
+        _dt = _dt.astimezone(ZONA_MX)
+        _dias = ["Lun", "Mar", "Mié", "Jue", "Vie", "Sáb", "Dom"]
+        _txt = f"🕒 Ingreso: {_dias[_dt.weekday()]} {_dt.strftime('%d/%m/%Y · %H:%M')}"
+    st.session_state["login_txt"] = _txt
+if st.session_state["login_txt"]:
+    st.markdown(
+        f"<div class='login-stamp'>{st.session_state['login_txt']}</div>",
+        unsafe_allow_html=True)
 
+# ── Navegación ──────────────────────────────────────────────────
+tabs_disponibles = ["📊 Análisis", "📋 Historial NC", "📖 Reglas de Aplicación",
+                    "🗂️ Gestión NC", "🔀 Transferencias"]
+if es_admin:
+    tabs_disponibles.append("👥 Usuarios")
 
-def hay_borrador_activo(usuario_id: str, numero_nc: str):
-    """Verifica si hay un borrador activo para esta NC."""
-    try:
-        db = get_client()
-        res = db.table("borradores_previo").select("id").eq(
-            "usuario_id", usuario_id
-        ).eq("numero_nc", numero_nc).limit(1).execute()
-        return len(res.data) > 0
-    except Exception:
-        return False
+# Índices dinámicos según el rol
+IDX_GESTION       = 3
+IDX_TRANSFEREN    = 4
+IDX_USUARIOS      = 5 if es_admin else None
 
+# ── Popup de notificaciones al iniciar sesión ───────────────────
+if not st.session_state.get("notif_mostrado", False):
+    notifs = obtener_notificaciones_pendientes(usuario["id"])
+    if notifs:
+        for n in notifs:
+            st.toast(f"🔔 {n['mensaje']}", icon="🔔")
+        marcar_notificaciones_vistas(usuario["id"])
+    notifs_t = obtener_transferencias_notificaciones_pendientes(usuario["id"])
+    if notifs_t:
+        for n in notifs_t:
+            st.toast(f"🔔 {n['mensaje']}", icon="🔔")
+        marcar_transferencias_notificaciones_vistas(usuario["id"])
+    # Solicitudes de perfil: admin ve cuántas hay pendientes; el usuario
+    # se entera del resultado (aprobada / rechazada con motivo)
+    if es_admin:
+        _pend = obtener_solicitudes_perfil(estado="pendiente")
+        if _pend:
+            st.toast(f"🔔 Hay {len(_pend)} solicitud(es) de perfil pendiente(s) "
+                     "por revisar (módulo Análisis).", icon="🔔")
+    else:
+        _resueltas = obtener_solicitudes_perfil_sin_notificar(usuario["id"])
+        for _r in _resueltas:
+            if _r["estado"] == "aprobada":
+                st.toast(f"✅ Tu solicitud del perfil «{_r['nombre']}» fue AUTORIZADA.", icon="✅")
+            else:
+                st.toast(f"❌ Tu solicitud del perfil «{_r['nombre']}» fue RECHAZADA. "
+                         f"Motivo: {_r.get('motivo_rechazo') or 'sin motivo'}", icon="❌")
+        marcar_solicitudes_perfil_notificadas([r["id"] for r in _resueltas])
+    st.session_state["notif_mostrado"] = True
 
-# ════════════════════════════════════════════════════════════════
-#   MÓDULO: ASIGNACIONES Y SEGUIMIENTO DE NC
-# ════════════════════════════════════════════════════════════════
-
-import re as _re
-
-
-def extraer_contenedores(texto: str):
+# Estilo "cinta": solo se ve el módulo actual; al pasar el mouse se abren todos.
+# El bloque <style> se renderiza siempre (vacío si el menú está fijado) para
+# no cambiar la posición de los elementos entre reruns.
+_NAV_SEL = '.st-key-nav_main [role="tablist"]:not([role="tabpanel"] [role="tablist"])'
+# Checkbox "Fijar menú": pegado a la derecha, a la altura de la cinta
+_css_chk = """
+    .st-key-nav_main{position:relative;}
+    .st-key-nav_fijado{position:absolute;left:0;top:-46px;z-index:5;width:auto !important;}
+    .st-key-nav_fijado label p{font-size:1.05rem !important;font-weight:600;}
+"""
+if st.session_state.get("nav_fijado", False):
+    _css_cinta = ""
+else:
+    # padding-top + margin-top negativo = zona sensible ampliada hacia arriba
+    _css_cinta = f"""
+    {_NAV_SEL}{{width:fit-content;max-width:100%;align-items:center;
+               padding-top:20px;margin-top:-20px;column-gap:0 !important;gap:0 !important;}}
+    /* Pestañas ocultas: colapsadas (no display:none) para poder animar la apertura */
+    {_NAV_SEL} [role="tab"][aria-selected="false"]{{
+        max-width:0;opacity:0;overflow:hidden;white-space:nowrap;
+        padding-left:0 !important;padding-right:0 !important;margin:0 !important;
+        pointer-events:none;border-width:0;
+        transition:max-width .28s cubic-bezier(.4,0,.2,1), opacity .2s ease .04s,
+                   padding .28s cubic-bezier(.4,0,.2,1);}}
+    {_NAV_SEL}:hover [role="tab"][aria-selected="false"]{{
+        max-width:260px;opacity:1;pointer-events:auto;
+        padding-left:.75rem !important;padding-right:.75rem !important;}}
+    {_NAV_SEL} [role="tab"][aria-selected="true"]{{font-size:1.35rem;font-weight:700;}}
+    {_NAV_SEL} [role="tab"][aria-selected="true"] p{{font-size:1.35rem !important;font-weight:700 !important;}}
+    {_NAV_SEL} [role="tab"][aria-selected="true"]::after{{content:"→";font-size:1.4rem;
+        opacity:.55;padding-left:14px;display:inline-block;overflow:hidden;max-width:40px;
+        transition:opacity .15s ease, max-width .28s cubic-bezier(.4,0,.2,1), padding .28s ease;}}
+    {_NAV_SEL}:hover [role="tab"][aria-selected="true"]::after{{opacity:0;max-width:0;padding-left:0;}}
     """
-    Extrae automáticamente contenedores válidos de un texto pegado,
-    sin importar el separador (comas, sin separar, combinado).
-    Formato: 3 letras + U + 7 dígitos = 11 caracteres.
-    Máximo 300 contenedores.
-    """
-    if not texto:
-        return []
-    limpio = _re.sub(r'[^A-Za-z0-9]', '', texto.upper())
-    encontrados = _re.findall(r'[A-Z]{3}U\d{7}', limpio)
-    # Deduplicar conservando el orden
-    vistos = []
-    for c in encontrados:
-        if c not in vistos:
-            vistos.append(c)
-    return vistos[:300]
+st.markdown(f"<style>{_css_chk}{_css_cinta}</style>", unsafe_allow_html=True)
+with st.container(key="nav_main"):
+    st.checkbox("📌 Fijar menú", key="nav_fijado",
+                help="Marcado: el menú de módulos se muestra completo. "
+                     "Desmarcado: solo se ve el módulo actual y se abre al pasar el mouse.")
+    nav = st.tabs(tabs_disponibles)
 
+# ════════════════════════════════════════════════════════════════
+#   PESTAÑA 1 — ANÁLISIS
+# ════════════════════════════════════════════════════════════════
+with nav[0]:
+    # Días especiales GLOBALES (los pone/quita solo el admin; valen para todos)
+    _dias_db = _cached_dias_especiales()
+    st.session_state["dias_comentarios"] = _dias_db
+    _tmin_an = st.session_state.get("_timein_min_analisis") \
+        if st.session_state["paso"] != "inicio" else None
+    st.session_state["dias_especiales"] = {d for d in _dias_db
+                                           if not _tmin_an or d >= _tmin_an}
+    col_izq, col_der = st.columns([3, 2])
+    bloqueado = st.session_state["paso"] != "inicio"
 
-# ── Motivos y Estatus (listas editables) ────────────────────────
+    with col_izq:
+        # ── Perfil ────────────────────────────────────────────
+        st.markdown("<div class='sec-hdr'>Perfil de Condonación</div>",
+                    unsafe_allow_html=True)
+        perfiles = st.session_state["perfiles"]
+        nombres  = [p["nombre"] for p in perfiles]
+        idx      = min(st.session_state["perfil_idx"], len(perfiles)-1)
 
-def obtener_nc_motivos(solo_activos=True):
-    try:
-        db = get_client()
-        q = db.table("nc_motivos").select("*").order("orden")
-        if solo_activos:
-            q = q.eq("activo", True)
-        res = q.execute()
-        return res.data or []
-    except Exception:
-        return []
+        # ── Solicitudes de perfil: admin resuelve / usuario consulta las suyas ──
+        if es_admin:
+            _pend = _cached_solicitudes_perfil_pendientes()
+            if _pend:
+                with st.expander(f"🔔 Solicitudes de perfil pendientes ({len(_pend)})",
+                                 expanded=True):
+                    for _sol in _pend:
+                        _reglas = (f"R1 30d: {'sí' if _sol.get('regla1_activa') else 'no'} · "
+                                   f"R2 4d: {'sí' if _sol.get('regla2_activa') else 'no'} · "
+                                   f"Previo: {'N/A' if _sol.get('na_previo') else str(_sol.get('dias_previo'))+' d'} · "
+                                   f"FFCC: {'N/A' if _sol.get('na_ffcc') else str(_sol.get('dias_ferromex'))+' d'} · "
+                                   f"Carretero: {'N/A' if _sol.get('na_carretero') else str(_sol.get('dias_carretero'))+' d'}")
+                        st.markdown(f"**{_sol['nombre']}** — solicitado por "
+                                    f"**{_sol['solicitante_nombre']}** "
+                                    f"({fecha_hora_mx(_sol.get('fecha_creacion'))})")
+                        st.caption(_reglas)
+                        with st.form(f"form_sol_{_sol['id']}"):
+                            _motivo = st.text_input("Motivo de rechazo (obligatorio solo si rechazas)",
+                                                    key=f"mot_sol_{_sol['id']}")
+                            fa, fb = st.columns(2)
+                            _ok_btn = fa.form_submit_button("✅ Aprobar", type="primary",
+                                                            width='stretch')
+                            _no_btn = fb.form_submit_button("❌ Rechazar", width='stretch')
+                        if _ok_btn or _no_btn:
+                            if _no_btn and not _motivo.strip():
+                                st.warning("Escribe el motivo del rechazo.")
+                            else:
+                                _ok_r, _err_r = resolver_solicitud_perfil(
+                                    _sol, aprobar=bool(_ok_btn),
+                                    admin_nombre=usuario["nombre_completo"],
+                                    motivo_rechazo=_motivo.strip())
+                                if _ok_r:
+                                    _cached_solicitudes_perfil_pendientes.clear()
+                                    if _ok_btn:
+                                        # recargar perfiles para que aparezca el nuevo
+                                        st.session_state["perfiles_cargados"] = False
+                                    st.rerun()
+                                else:
+                                    st.error(f"No se pudo resolver la solicitud: {_err_r}")
+                        st.divider()
+        else:
+            _mias = obtener_solicitudes_perfil(solicitante_id=usuario["id"], limite=8)
+            if _mias:
+                _icono = {"pendiente": "⏳", "aprobada": "✅", "rechazada": "❌"}
+                with st.expander(f"📨 Mis solicitudes de perfil ({len(_mias)})"):
+                    for _m in _mias:
+                        _extra = (f" — motivo: {_m.get('motivo_rechazo')}"
+                                  if _m["estado"] == "rechazada" else "")
+                        st.write(f"{_icono.get(_m['estado'], '•')} **{_m['nombre']}** — "
+                                 f"{_m['estado']}{_extra}")
 
+        c1, c2, c3, c4 = st.columns([3,1,1,1])
+        with c1:
+            sel = st.selectbox("Perfil", nombres, index=idx,
+                               label_visibility="collapsed", disabled=bloqueado)
+            nuevo_idx = nombres.index(sel)
+            if nuevo_idx != st.session_state["perfil_idx"]:
+                st.session_state["perfil_idx"] = nuevo_idx
+                perfil_sel = perfiles[nuevo_idx]
+                perfil_sel_id = perfil_sel.get("id", "")
+                if perfil_sel_id:
+                    guardar_ultimo_perfil_db(usuario["id"], perfil_sel_id)
+        with c2:
+            if st.button("➕ Nuevo" if es_admin else "📨 Solicitar", width='stretch',
+                         disabled=bloqueado,
+                         help=None if es_admin else
+                         "Envía una solicitud de perfil nuevo; el administrador la autoriza o la rechaza."):
+                st.session_state["mostrar_form_perfil"] = "nuevo"
+        with c3:
+            if st.button("✏️ Editar", width='stretch',
+                         disabled=nuevo_idx==0 or bloqueado or not es_admin,
+                         help=None if es_admin else "Solo el administrador puede editar perfiles."):
+                st.session_state["mostrar_form_perfil"] = "editar"
+        with c4:
+            if st.button("🗑️", width='stretch',
+                         disabled=nuevo_idx==0 or bloqueado or not es_admin,
+                         help=None if es_admin else "Solo el administrador puede eliminar perfiles."):
+                perfil_id = perfiles[nuevo_idx].get("id", "")
+                if perfil_id:
+                    eliminar_perfil_db(perfil_id)
+                st.session_state["perfiles"].pop(nuevo_idx)
+                st.session_state["perfil_idx"] = 0
+                st.rerun()
 
-def crear_nc_motivo(texto: str):
-    try:
-        db = get_client()
-        max_orden = db.table("nc_motivos").select("orden").order("orden", desc=True).limit(1).execute()
-        siguiente = (max_orden.data[0]["orden"] + 1) if max_orden.data else 1
-        db.table("nc_motivos").insert({"texto": texto, "orden": siguiente}).execute()
-        return True
-    except Exception:
-        return False
+        if st.session_state["mostrar_form_perfil"]:
+            modo = st.session_state["mostrar_form_perfil"]
+            p    = perfiles[nuevo_idx] if modo == "editar" else {}
+            with st.expander("Configurar Perfil", expanded=True):
+                nombre_p = st.text_input("Nombre", value=p.get("nombre",""))
+                r1 = st.checkbox("Aplicar regla 30 días (Regla 1)",
+                                  value=p.get("regla1_activa", True))
+                r2 = st.checkbox("Aplicar regla 4 días (Regla 2)",
+                                  value=p.get("regla2_activa", True))
+                pc1, pc2, pc3 = st.columns(3)
+                na_p = pc1.checkbox("R3: No aplica previo",
+                                    value=p.get("na_previo", False))
+                na_f = pc2.checkbox("R4: No aplica FFCC",
+                                    value=p.get("na_ffcc", False))
+                na_c = pc3.checkbox("R5: No aplica carretero",
+                                    value=p.get("na_carretero", False))
+                pc4, pc5, pc6 = st.columns(3)
+                dp = pc4.number_input("Días previo (R3)", 1, 30,
+                                       p.get("dias_previo", 3),
+                                       disabled=na_p)
+                df = pc5.number_input("Días FFCC (R4)", 1, 30,
+                                       p.get("dias_ferromex", 3),
+                                       disabled=na_f)
+                dc = pc6.number_input("Días carretero (R5)", 1, 30,
+                                       p.get("dias_carretero", 2),
+                                       disabled=na_c)
+                bg1, bg2 = st.columns(2)
+                if bg1.button("💾 Guardar" if es_admin else "📨 Enviar solicitud",
+                              width='stretch'):
+                    _nombres_ocupados = {n.strip().lower() for n in nombres}
+                    if not es_admin:
+                        _nombres_ocupados |= {x["nombre"].strip().lower()
+                                              for x in _cached_solicitudes_perfil_pendientes()}
+                    if not nombre_p.strip():
+                        st.warning("Escribe un nombre para el perfil.")
+                    elif (modo == "nuevo" or not es_admin) and \
+                            nombre_p.strip().lower() in _nombres_ocupados:
+                        st.warning("Ya existe un perfil (o solicitud pendiente) con ese nombre.")
+                    elif not es_admin:
+                        # Usuario: no crea el perfil, envía solicitud al administrador
+                        ok_s, res_s = crear_solicitud_perfil(
+                            usuario["id"], usuario["nombre_completo"],
+                            {"nombre": nombre_p.strip(), "regla1_activa": r1, "regla2_activa": r2,
+                             "dias_previo": dp, "dias_ferromex": df, "dias_carretero": dc,
+                             "na_previo": na_p, "na_ffcc": na_f, "na_carretero": na_c})
+                        if ok_s:
+                            _cached_solicitudes_perfil_pendientes.clear()
+                            st.session_state["mostrar_form_perfil"] = None
+                            st.toast("📨 Solicitud enviada al administrador.", icon="📨")
+                            st.rerun()
+                        else:
+                            st.error(f"No se pudo enviar la solicitud: {res_s}")
+                    else:
+                        np2 = {"nombre": nombre_p, "es_default": False,
+                               "regla1_activa": r1, "regla2_activa": r2,
+                               "dias_previo": dp, "dias_ferromex": df,
+                               "dias_carretero": dc,
+                               "na_previo": na_p, "na_ffcc": na_f,
+                               "na_carretero": na_c}
+                        if modo == "nuevo":
+                            ok_p, data_p = crear_perfil_db(np2)
+                            if ok_p:
+                                np2["id"] = data_p.get("id", "")
+                                st.session_state["perfiles"].append(np2)
+                                st.session_state["perfil_idx"] = len(st.session_state["perfiles"]) - 1
+                        else:
+                            perfil_id = st.session_state["perfiles"][nuevo_idx].get("id", "")
+                            modificar_perfil_db(perfil_id, np2)
+                            np2["id"] = perfil_id
+                            st.session_state["perfiles"][nuevo_idx] = np2
+                        st.session_state["mostrar_form_perfil"] = None
+                        st.rerun()
+                if bg2.button("Cancelar", width='stretch'):
+                    st.session_state["mostrar_form_perfil"] = None
+                    st.rerun()
 
+        # ── Resumen informativo del perfil ────────────────────
+        perfil_activo = st.session_state["perfiles"][nuevo_idx]
+        r1_txt  = "✅ Activa" if perfil_activo.get("regla1_activa", True) else "❌ Desactivada"
+        r2_txt  = "✅ Activa" if perfil_activo.get("regla2_activa", True) else "❌ Desactivada"
+        dp_txt  = "🚫 No aplica" if perfil_activo.get("na_previo", False) else f"{perfil_activo.get('dias_previo', 3)} días hábiles"
+        df_txt  = "🚫 No aplica" if perfil_activo.get("na_ffcc", False) else f"{perfil_activo.get('dias_ferromex', 3)} días naturales"
+        dc_txt  = "🚫 No aplica" if perfil_activo.get("na_carretero", False) else f"{perfil_activo.get('dias_carretero', 2)} días hábiles"
+        st.markdown(f"""
+        <div style='background:#FFF3E0;color:#3E2723;border-left:4px solid #E65100;padding:10px 14px;
+                    border-radius:4px;font-size:13px;color:#555;margin-bottom:8px;'>
+        <b>Configuración del perfil activo:</b><br>
+        📅 <b>Regla 1</b> — Validación 30 días naturales: {r1_txt}<br>
+        📅 <b>Regla 2</b> — Validación primeros 4 días: {r2_txt}<br>
+        🔄 <b>Regla 3</b> — Plazo para posicionamiento de previo: <b>{dp_txt}</b><br>
+        🚂 <b>Regla 4</b> — Plazo para carga a góndola FFCC: <b>{df_txt}</b><br>
+        🚚 <b>Regla 5</b> — Plazo para entrega carretero: <b>{dc_txt}</b>
+        </div>
+        """, unsafe_allow_html=True)
 
-def editar_nc_motivo(motivo_id: str, texto: str):
-    try:
-        db = get_client()
-        db.table("nc_motivos").update({"texto": texto}).eq("id", motivo_id).execute()
-        return True
-    except Exception:
-        return False
+        # ── Datos de solicitud ────────────────────────────────
+        st.markdown("<div class='sec-hdr'>Datos de Solicitud</div>",
+                    unsafe_allow_html=True)
+        dc1, dc2 = st.columns(2)
+        # Reset NC y fecha — usar input_key para forzar re-render
+        ikey = st.session_state["uploader_key"]
 
+        # ── Campo de N° NC: lista (default) o captura manual ───────────
+        captura_manual_nc = st.checkbox("✏️ Capturar manualmente NC",
+                                        disabled=bloqueado,
+                                        key=f"captura_manual_nc_{ikey}")
 
-def eliminar_nc_motivo(motivo_id: str):
-    try:
-        db = get_client()
-        db.table("nc_motivos").update({"activo": False}).eq("id", motivo_id).execute()
-        return True
-    except Exception:
-        return False
+        if captura_manual_nc:
+            nc_input = dc1.text_input("N° Nota de Crédito (manual)",
+                                       placeholder="Ej: NC-2585",
+                                       disabled=bloqueado,
+                                       key=f"nc_manual_{ikey}")
+            dc1.caption("Formato obligatorio: **NC-** y el consecutivo de 4 o 5 "
+                        "dígitos (ej. NC-2585, NC-10000).")
+            nc_manual_activa = True
+        else:
+            nc_manual_activa = False
+            nc_asignadas_disp = _cached_nc_asignaciones()
+            # Deduplicar nombres conservando orden
+            nombres_nc_asig = []
+            for nc in nc_asignadas_disp:
+                if nc["nc_externo"] not in nombres_nc_asig:
+                    nombres_nc_asig.append(nc["nc_externo"])
 
+            if not nombres_nc_asig:
+                dc1.info("No hay NCs asignadas aún. Marca 'Capturar manualmente NC' "
+                         "o pide al administrador que cree una en Gestión NC → Asignar NC.")
+                nc_input = ""
+            else:
+                opciones_nc = ["-- Selecciona una NC --"] + sorted(nombres_nc_asig)
+                nc_sel = dc1.selectbox("N° Nota de Crédito",
+                                       opciones_nc, disabled=bloqueado,
+                                       key=f"nc_sel_{ikey}")
+                nc_input = "" if nc_sel == "-- Selecciona una NC --" else nc_sel
 
-def obtener_nc_estatus(solo_activos=True):
-    try:
-        db = get_client()
-        q = db.table("nc_estatus").select("*").order("orden")
-        if solo_activos:
-            q = q.eq("activo", True)
-        res = q.execute()
-        return res.data or []
-    except Exception:
-        return []
+        with dc2:
+            fecha_picker = st.date_input("Fecha Solicitud NC",
+                                          value=hoy_mx(),
+                                          format="DD/MM/YYYY",
+                                          disabled=bloqueado,
+                                          key=f"fecha_picker_{ikey}")
+            fecha_picker = fecha_picker if fecha_picker else hoy_mx()
+            fecha_input = fecha_picker.strftime("%d/%m/%Y")
+        st.caption("La fecha aplica a todos los contenedores.")
 
+        # ── Condonación Manual Directa ────────────────────────
+        st.markdown("<div class='sec-hdr'>Condonación Manual Directa</div>",
+                    unsafe_allow_html=True)
+        cond_manual_check = st.checkbox(
+            "Realizar condonación manual directa (omite cálculo automático de desfases)",
+            value=st.session_state["cond_manual"],
+            disabled=bloqueado
+        )
+        st.session_state["cond_manual"] = cond_manual_check
 
-def crear_nc_estatus(texto: str, es_concluido=False):
-    try:
-        db = get_client()
-        max_orden = db.table("nc_estatus").select("orden").order("orden", desc=True).limit(1).execute()
-        siguiente = (max_orden.data[0]["orden"] + 1) if max_orden.data else 1
-        db.table("nc_estatus").insert({
-            "texto": texto, "orden": siguiente, "es_concluido": es_concluido
-        }).execute()
-        return True
-    except Exception:
-        return False
+        if cond_manual_check:
+            st.caption("⚠️ Las reglas 3, 4 y 5 se omiten. Los días ingresados se usan directamente para calcular la condonación.")
+            cm1, cm2, cm3 = st.columns(3)
+            dias_m_previo = cm1.number_input("🔄 Días previo",      min_value=0, value=st.session_state["dias_manual_previo"], disabled=bloqueado)
+            dias_m_ffcc   = cm2.number_input("🚂 Días ferroviario", min_value=0, value=st.session_state["dias_manual_ffcc"],   disabled=bloqueado)
+            dias_m_carr   = cm3.number_input("🚚 Días carretero",   min_value=0, value=st.session_state["dias_manual_carr"],   disabled=bloqueado)
+            st.session_state["dias_manual_previo"] = dias_m_previo
+            st.session_state["dias_manual_ffcc"]   = dias_m_ffcc
+            st.session_state["dias_manual_carr"]   = dias_m_carr
 
+        # ── Archivos ──────────────────────────────────────────
+        st.markdown("<div class='sec-hdr'>Archivos de Entrada</div>",
+                    unsafe_allow_html=True)
+        ukey = st.session_state["uploader_key"]
+        if st.session_state.get("errores_carga"):
+            st.error("⛔ Se detuvo el análisis. Corrige y vuelve a subir los archivos:\n\n" +
+                     "\n".join(f"- {e}" for e in st.session_state["errores_carga"]))
+        fa1, fa2 = st.columns(2)
+        with fa1:
+            f_tab = st.file_uploader("📋 Tabulador Comercial",
+                                      type=["xlsx","xls"],
+                                      key=f"tab_{ukey}",
+                                      disabled=bloqueado)
+            if f_tab:
+                st.session_state["errores_carga"] = []
+                try:
+                    st.session_state["df_tab"] = pd.read_excel(f_tab)
+                    st.success(f"✔ {f_tab.name}")
+                except Exception as e:
+                    st.error(str(e))
+        with fa2:
+            f_bi = st.file_uploader("📊 Archivo BI",
+                                     type=["xlsx","xls"],
+                                     key=f"bi_{ukey}",
+                                     disabled=bloqueado)
+            if f_bi:
+                try:
+                    st.session_state["df_bi"] = pd.read_excel(f_bi)
+                    st.success(f"✔ {f_bi.name}")
+                except Exception as e:
+                    st.error(str(e))
 
-def editar_nc_estatus(estatus_id: str, texto: str, es_concluido=False):
-    try:
-        db = get_client()
-        db.table("nc_estatus").update({
-            "texto": texto, "es_concluido": es_concluido
-        }).eq("id", estatus_id).execute()
-        return True
-    except Exception:
-        return False
+        # ── Ajuste de horario de previo (opcional) ─────────────
+        # El archivo BI no trae la hora en que se programó el previo, así
+        # que se pide de forma opcional por contenedor, solo cuando NO se
+        # está usando Condonación Manual Directa (ahí las reglas 3/4/5 no
+        # se calculan).
+        if not cond_manual_check and st.session_state["df_bi"] is not None:
+            df_bi_raw    = st.session_state["df_bi"]
+            col_cont_raw = COL_BI["contenedor"]
+            col_prev_raw = COL_BI["fecha_previo"]
 
+            if col_cont_raw in df_bi_raw.columns and col_prev_raw in df_bi_raw.columns:
+                conts_con_previo = []
+                _vistos = set()
+                for _, _r in df_bi_raw.iterrows():
+                    _cont_norm = normalizar_contenedor(_r.get(col_cont_raw))
+                    if not _cont_norm or _cont_norm in _vistos:
+                        continue
+                    if to_date(_r.get(col_prev_raw)):
+                        conts_con_previo.append(_cont_norm)
+                        _vistos.add(_cont_norm)
 
-def eliminar_nc_estatus(estatus_id: str):
-    try:
-        db = get_client()
-        db.table("nc_estatus").update({"activo": False}).eq("id", estatus_id).execute()
-        return True
-    except Exception:
-        return False
+                if conts_con_previo:
+                    st.markdown("<div class='sec-hdr'>🕐 Ajuste de horario de previo (opcional)</div>",
+                                unsafe_allow_html=True)
+                    st.caption(
+                        "El archivo BI no trae la hora en que se programó el previo. "
+                        "Si quieres que se considere en el cálculo de la Regla 3, "
+                        "actívalo por contenedor e indica si se programó dentro o "
+                        "después de la ventana de asignación. Si no lo activas para "
+                        "un contenedor, la regla funciona como siempre."
+                    )
+                    horario_previo_prev = dict(st.session_state.get("horario_previo", {}))
+                    horario_previo_nuevo = {}
+                    with st.expander(
+                        f"Configurar horario de previo ({len(conts_con_previo)} contenedor(es))",
+                        expanded=False
+                    ):
+                        opciones_ventana = [
+                            "Se programó durante la ventana de asignación",
+                            "Se programó después de la ventana de asignación",
+                        ]
+                        for _cont in conts_con_previo:
+                            _prev = horario_previo_prev.get(_cont, {})
+                            hc1, hc2, hc3 = st.columns([2, 1, 2])
+                            with hc1:
+                                st.markdown(f"**{_cont}**")
+                                _contar = st.checkbox(
+                                    "Contabilizar hora de programación",
+                                    value=_prev.get("contar", False),
+                                    disabled=bloqueado,
+                                    key=f"hp_contar_{_cont}"
+                                )
+                            if _contar:
+                                with hc2:
+                                    _profepa = st.checkbox(
+                                        "PROFEPA",
+                                        value=_prev.get("profepa", False),
+                                        disabled=bloqueado,
+                                        key=f"hp_profepa_{_cont}"
+                                    )
+                                with hc3:
+                                    _idx_def = 1 if _prev.get("fuera_ventana") else 0
+                                    _sel = st.selectbox(
+                                        "Momento de programación",
+                                        opciones_ventana,
+                                        index=_idx_def,
+                                        disabled=bloqueado,
+                                        key=f"hp_ventana_{_cont}"
+                                    )
+                                horario_previo_nuevo[_cont] = {
+                                    "contar":       True,
+                                    "profepa":      _profepa,
+                                    "fuera_ventana": _sel == opciones_ventana[1],
+                                }
+                            st.markdown("<hr style='margin:4px 0;'>", unsafe_allow_html=True)
+                    st.session_state["horario_previo"] = horario_previo_nuevo
 
+        # ── Botones principales ───────────────────────────────
+        st.markdown("---")
+        ambos = (st.session_state["df_tab"] is not None and
+                 st.session_state["df_bi"] is not None)
 
-# ── NC Asignaciones — CRUD principal ────────────────────────────
+        bb1, bb2 = st.columns(2)
+        with bb1:
+            iniciar = st.button("▶ Iniciar Análisis",
+                                disabled=not ambos or bloqueado,
+                                width='stretch', type="primary")
+        with bb2:
+            if st.button("↺ Nuevo Análisis", width='stretch'):
+                st.session_state["df_tab"]             = None
+                st.session_state["df_bi"]              = None
+                st.session_state["df_tab_v"]           = None
+                st.session_state["df_bi_v"]            = None
+                st.session_state["desfases"]           = {}
+                st.session_state["montos"]             = {}
+                st.session_state["alertas"]            = []
+                st.session_state["paso"]               = "inicio"
+                st.session_state["reporte_bytes"]      = None
+                st.session_state["horario_previo"]     = {}
+                st.session_state["uploader_key"] += 1
+                st.rerun()
 
-def crear_nc_asignacion(nc_externo: str, responsable_id: str, responsable_nombre: str,
-                         fecha_solicitud: str, creado_por: str, vinculada_a: str = None,
-                         notificar: bool = True):
-    """Crea una nueva NC asignada. Retorna (True, id) o (False, error)."""
-    try:
-        db = get_client()
-        if vinculada_a:
-            vinculada_a = _resolver_raiz_nc(vinculada_a)
-        res = db.table("nc_asignaciones").insert({
-            "nc_externo":          nc_externo,
-            "responsable_id":      responsable_id,
-            "responsable_nombre":  responsable_nombre,
-            "fecha_solicitud":     fecha_solicitud,
-            "creado_por":          creado_por,
-            "vinculada_a":         vinculada_a,
-            "estado_visual":       "nuevo",
-            "estatus":             "PENDIENTE DE REVISAR",
-        }).execute()
-        if res.data:
-            nc_id = res.data[0]["id"]
-            if notificar:
-                crear_nc_notificacion(
-                    responsable_id, nc_id,
-                    f"Se te asignó una nueva NC: {nc_externo}"
+        # ── Mostrar alertas acumuladas ────────────────────────
+        if st.session_state["alertas"]:
+            st.markdown("---")
+            st.markdown("### Alertas del análisis")
+            for tipo, msg in st.session_state["alertas"]:
+                if tipo == "warning":
+                    st.warning(msg)
+                elif tipo == "info":
+                    st.info(msg)
+                elif tipo == "error":
+                    st.error(msg)
+                elif tipo == "duplicado":
+                    st.error(msg)
+
+        # ════════════════════════════════════════════════════
+        #   FLUJO: INICIAR ANÁLISIS
+        # ════════════════════════════════════════════════════
+        if iniciar:
+            try:
+                fecha_sol = datetime.strptime(fecha_input, "%d/%m/%Y").date()
+            except ValueError:
+                st.error("Formato de fecha inválido. Use DD/MM/AAAA")
+                st.stop()
+
+            if not nc_input.strip():
+                st.warning("Ingrese el número de nota de crédito")
+                st.stop()
+
+            # Captura manual: el número debe ser NC-#### (4 o 5 dígitos).
+            if nc_manual_activa:
+                if not validar_formato_nc(nc_input):
+                    st.error("Formato de NC inválido. Debe ser **NC-** seguido del "
+                             "consecutivo de 4 o 5 dígitos (ej. NC-2585 o NC-10000).")
+                    st.stop()
+                nc_input = normalizar_numero_nc(nc_input)
+
+            perfil  = st.session_state["perfiles"][st.session_state["perfil_idx"]]
+            alertas = []
+
+            with st.spinner("Validando archivos..."):
+                df_tv, df_bv, errores, advertencias = validar_archivos(
+                    st.session_state["df_tab"].copy(),
+                    st.session_state["df_bi"].copy()
                 )
-            return True, nc_id
-        return False, "No se pudo crear"
-    except Exception as e:
-        return False, str(e)
 
+            if errores:
+                # Se guardan para mostrarlos DESPUÉS del rerun (antes se
+                # borraban al instante y el usuario no alcanzaba a leerlos)
+                st.session_state["errores_carga"] = list(errores)
+                st.session_state["df_tab"]       = None
+                st.session_state["df_bi"]        = None
+                st.session_state["reporte_bytes"] = None
+                st.session_state["uploader_key"] += 1
+                st.rerun()
 
-def obtener_nc_asignaciones(responsable_id: str = None, solo_activas: bool = None,
-                             solo_concluidas: bool = None):
-    """Obtiene NCs asignadas con filtros opcionales."""
-    try:
-        db = get_client()
-        q = db.table("nc_asignaciones").select("*")
-        if responsable_id:
-            q = q.eq("responsable_id", responsable_id)
-        if solo_concluidas is True:
-            q = q.eq("concluida", True)
-        elif solo_concluidas is False:
-            q = q.eq("concluida", False)
-        q = q.order("fecha_creacion", desc=True)
-        res = q.execute()
-        return res.data or []
-    except Exception:
-        return []
+            for a in advertencias:
+                alertas.append(("warning", a))
 
+            # ── Verificar duplicados en BD ────────────────────
+            # ── Validar días del calendario contra TimeIn ────────
+            from app.validaciones import to_date as _to_date
+            timein_dates = [_to_date(row.get(COL_BI["time_in"]))
+                           for _, row in df_bv.iterrows()
+                           if _to_date(row.get(COL_BI["time_in"]))]
+            if timein_dates:
+                timein_min = min(timein_dates)
+                # Los días especiales son globales: no se borran; este análisis
+                # simplemente ignora los anteriores al ingreso del contenedor.
+                st.session_state["_timein_min_analisis"] = timein_min
+                st.session_state["dias_especiales"] = {
+                    d for d in st.session_state["dias_especiales"] if d >= timein_min}
 
-def obtener_nc_por_id(nc_id: str):
-    try:
-        db = get_client()
-        res = db.table("nc_asignaciones").select("*").eq("id", nc_id).execute()
-        return res.data[0] if res.data else None
-    except Exception:
-        return None
+            with st.spinner("Verificando duplicados en historial..."):
+                contenedores_list = df_bv[COL_BI["contenedor"]].tolist()
+                facturas_list     = df_bv[COL_BI["no_factura"]].tolist() if COL_BI["no_factura"] in df_bv.columns else []
+                duplicados        = verificar_duplicados(contenedores_list, facturas_list)
 
+            if duplicados:
+                for dup in duplicados:
+                    if dup["tipo"] == "ERROR":
+                        alertas.append(("warning",
+                            f"⚠️ No se pudo verificar duplicados en el historial: {dup['valor']}"))
+                    elif dup["tipo"] == "Factura":
+                        alertas.append(("duplicado",
+                            f"⚠️ **Factura duplicada:** La factura **{dup['valor']}** "
+                            f"del contenedor **{dup['contenedor']}** ya fue registrada "
+                            f"en la NC **{dup['nc_anterior']}** (fecha: {dup['fecha']}). "
+                            f"Verifique antes de continuar."))
+                    elif dup["tipo"] == "Contenedor":
+                        alertas.append(("duplicado",
+                            f"⚠️ **Contenedor duplicado:** El contenedor **{dup['valor']}** "
+                            f"ya fue registrado en la NC **{dup['nc_anterior']}** "
+                            f"(fecha: {dup['fecha']}). Verifique antes de continuar."))
 
-def obtener_nc_hijas(nc_id: str):
-    """Obtiene todas las NC que tienen a nc_id como su NC raíz (vinculada_a)."""
-    try:
-        db = get_client()
-        res = db.table("nc_asignaciones").select("*").eq("vinculada_a", nc_id).execute()
-        return res.data or []
-    except Exception:
-        return []
+            with st.spinner("Calculando desfases..."):
+                # Aplicar NA del perfil
+                perfil_act = st.session_state["perfiles"][st.session_state["perfil_idx"]]
+                if st.session_state["cond_manual"]:
+                    dp_m = int(st.session_state["dias_manual_previo"])
+                    df_m = int(st.session_state["dias_manual_ffcc"])
+                    dc_m = int(st.session_state["dias_manual_carr"])
+                    if dp_m == 0 and df_m == 0 and dc_m == 0:
+                        st.error("❌ Condonación manual activa: debes ingresar al menos 1 día en alguno de los campos. No hay condonaciones a realizar.")
+                        st.session_state["paso"] = "inicio"
+                        st.stop()
+                    # Construir desfases manuales por contenedor
+                    desfases = {}
+                    for _, row in df_bv.iterrows():
+                        cont   = row[COL_BI["contenedor"]]
+                        dp_fin = 0 if perfil_act.get("na_previo", False) else dp_m
+                        df_fin = 0 if perfil_act.get("na_ffcc", False)   else df_m
+                        dc_fin = 0 if perfil_act.get("na_carretero", False) else dc_m
+                        desfases[cont] = {
+                            "desfase_previo":    dp_fin,
+                            "desfase_ffcc":      df_fin,
+                            "desfase_carretero": dc_fin,
+                            "total_desfase":     dp_fin + df_fin + dc_fin,
+                            "es_manual":         True,
+                            "na_previo":         perfil_act.get("na_previo", False),
+                            "na_ffcc":           perfil_act.get("na_ffcc", False),
+                            "na_carretero":      perfil_act.get("na_carretero", False),
+                        }
+                else:
+                    desfases = calcular_desfases(
+                        df_bv, st.session_state["dias_especiales"], perfil,
+                        horario_previo=st.session_state.get("horario_previo", {})
+                    )
+                    for cont in desfases:
+                        desfases[cont]["es_manual"]    = False
+                        desfases[cont]["na_previo"]    = perfil_act.get("na_previo", False)
+                        desfases[cont]["na_ffcc"]      = perfil_act.get("na_ffcc", False)
+                        desfases[cont]["na_carretero"] = perfil_act.get("na_carretero", False)
+                        # Aplicar NA: poner 0 en los conceptos que no aplican
+                        if desfases[cont]["na_previo"]:
+                            desfases[cont]["desfase_previo"] = 0
+                        if desfases[cont]["na_ffcc"]:
+                            desfases[cont]["desfase_ffcc"] = 0
+                        if desfases[cont]["na_carretero"]:
+                            desfases[cont]["desfase_carretero"] = 0
+                        desfases[cont]["total_desfase"] = (
+                            desfases[cont]["desfase_previo"] +
+                            desfases[cont]["desfase_ffcc"] +
+                            desfases[cont]["desfase_carretero"]
+                        )
 
+            with st.spinner("Calculando montos..."):
+                montos = calcular_montos(df_bv, desfases)
 
-def _resolver_raiz_nc(nc_id: str):
-    """Si nc_id ya depende de otra NC (es hija), regresa el id de su raíz real.
-    Evita cadenas de más de 2 niveles: siempre raíz -> hijas, nunca raíz -> hija -> nieta."""
-    nc = obtener_nc_por_id(nc_id)
-    if nc and nc.get("vinculada_a"):
-        return nc["vinculada_a"]
-    return nc_id
+            # Regla 1
+            no_r1 = aplicar_regla1(df_bv, df_tv, fecha_sol, {}, perfil)
+            if no_r1:
+                alertas.append(("warning",
+                    f"**Regla 1 — 30 días:** Contenedores fuera de plazo: "
+                    f"{', '.join(no_r1)}"))
 
+            # Regla 2
+            no_r2 = aplicar_regla2(df_bv, perfil)
+            if no_r2:
+                alertas.append(("warning",
+                    f"**Regla 2 — 4 días:** Contenedores que no cumplen: "
+                    f"{', '.join(no_r2)}"))
 
-def vincular_nc_existente(nc_id: str, nc_raiz_id: str):
-    """Vincula una NC ya existente a otra NC como su raíz.
-    Retorna (True, None) o (False, mensaje_error)."""
-    try:
-        if nc_id == nc_raiz_id:
-            return False, "Una NC no puede vincularse a sí misma."
-        raiz_real = _resolver_raiz_nc(nc_raiz_id)
-        if raiz_real == nc_id:
-            return False, "Esa NC ya depende de esta misma NC."
-        hijas_propias = obtener_nc_hijas(nc_id)
-        if hijas_propias:
-            return False, ("Esta NC ya es raíz de otras NC. Quita esos vínculos primero "
-                            "para poder convertirla en hija de otra NC.")
-        ok = actualizar_nc_asignacion(nc_id, {"vinculada_a": raiz_real})
-        return (True, None) if ok else (False, "No se pudo guardar el vínculo.")
-    except Exception as e:
-        return False, str(e)
+            # ── Comentario dinámico para condonación manual ───────
+            if st.session_state["cond_manual"]:
+                dp_m = int(st.session_state["dias_manual_previo"])
+                df_m = int(st.session_state["dias_manual_ffcc"])
+                dc_m = int(st.session_state["dias_manual_carr"])
+                alertas.append(("info",
+                    f"**Condonación Manual Directa activa:** "
+                    f"Previo={dp_m} días | Ferroviario={df_m} días | "
+                    f"Carretero={dc_m} días | Total={dp_m+df_m+dc_m} días"))
 
+            # Alertas liner y reprogramaciones
+            liners, reprog = [], []
+            for _, row in df_bv.iterrows():
+                cont = row[COL_BI["contenedor"]]
+                fa2  = row.get(COL_BI["fecha_auth_naviera"])
+                if pd.notna(fa2) and str(fa2).strip() not in ("","nan"):
+                    liners.append(cont)
+                try:
+                    if int(row.get(COL_BI["no_entregas"], 0)) >= 2:
+                        reprog.append(cont)
+                except Exception:
+                    pass
 
-def desvincular_nc(nc_id: str):
-    """Quita el vínculo de una NC con su NC raíz (la vuelve independiente)."""
-    try:
-        return actualizar_nc_asignacion(nc_id, {"vinculada_a": None})
-    except Exception:
-        return False
+            if liners:
+                alertas.append(("info",
+                    f"**Liner:** Revisar autorización naviera para: "
+                    f"{', '.join(liners)}"))
+            if reprog:
+                alertas.append(("warning",
+                    f"**Reprogramaciones:** Más de 1 programación en: "
+                    f"{', '.join(reprog)}"))
 
+            # Fecha de cancelación de previo detectada
+            cancelados = []
+            if COL_BI["fecha_cancel"] in df_bv.columns:
+                for _, row in df_bv.iterrows():
+                    if to_date(row.get(COL_BI["fecha_cancel"])):
+                        cancelados.append(row[COL_BI["contenedor"]])
+            if cancelados:
+                alertas.append(("warning",
+                    f"⚠️ Se detectó fecha de cancelación de previo en: "
+                    f"{', '.join(cancelados)}. Favor de validar información."))
 
-def eliminar_nc_asignacion(nc_id: str):
-    """Elimina permanentemente una NC asignada (desaparece de todas las
-    sub-pestañas de Gestión NC). Si otras NC dependían de ella como raíz,
-    quedan independientes en vez de perderse. También limpia sus
-    notificaciones y su rastro de duplicados revisados."""
-    try:
-        db = get_client()
-        for hija in obtener_nc_hijas(nc_id):
-            actualizar_nc_asignacion(hija["id"], {"vinculada_a": None})
-        db.table("nc_notificaciones").delete().eq("nc_id", nc_id).execute()
-        db.table("nc_duplicados_revisados").delete().eq("nc_id", nc_id).execute()
-        db.table("nc_asignaciones").delete().eq("id", nc_id).execute()
-        return True
-    except Exception:
-        return False
+            st.session_state["df_tab_v"]        = df_tv
+            st.session_state["df_bi_v"]         = df_bv
+            st.session_state["desfases"]        = desfases
+            st.session_state["montos"]          = montos
+            st.session_state["fecha_solicitud"] = fecha_sol
+            st.session_state["nc_cliente"]      = nc_input.strip()
+            st.session_state["fecha_revision"]  = hoy_mx()
+            st.session_state["alertas"]         = alertas
 
+            # ── Detectar contenedores con 2+ servicios ───────────
+            from app.config import COL_BI as _CB
+            conts_multi = []
+            for _, row in df_bv.iterrows():
+                try:
+                    ns = int(row.get(_CB.get("no_servicios","No. Servicios"), 0) or 0)
+                    if ns >= 2:
+                        conts_multi.append(row[_CB["contenedor"]])
+                except Exception:
+                    pass
 
-def fusionar_nc(nc_mantener_id: str, nc_anterior_id: str):
-    """Fusiona una NC anterior (nc_anterior_id) dentro de la NC vigente
-    (nc_mantener_id). nc_mantener_id queda como la NC MÁS ALTA de la
-    jerarquía (la activa, la que sigue dando seguimiento) y nc_anterior_id
-    como MÁS BAJA (historial — ej. se cerró/rechazó y se volvió a subir).
-    Si nc_anterior_id ya tenía su propio historial debajo, ese historial
-    se reacomoda directo bajo nc_mantener_id (nunca más de 2 niveles).
-    Retorna (True, None) o (False, mensaje_error)."""
-    try:
-        if nc_mantener_id == nc_anterior_id:
-            return False, "No se puede fusionar una NC consigo misma."
-        mantener = obtener_nc_por_id(nc_mantener_id)
-        anterior = obtener_nc_por_id(nc_anterior_id)
-        if not mantener or not anterior:
-            return False, "No se encontró alguna de las dos NC."
-        if mantener.get("vinculada_a"):
-            return False, ("Esta NC ya depende de otra en la jerarquía; fusiona "
-                            "desde la NC más alta de esa jerarquía, no desde esta.")
+            if conts_multi:
+                st.session_state["conts_multi_previo"] = conts_multi
+                st.session_state["paso"] = "previo_alerta"
+            else:
+                st.session_state["conts_multi_previo"] = []
+                st.session_state["paso"] = "confirmacion"
+            st.rerun()
 
-        conts_m = {c.strip() for c in (mantener.get("contenedores") or "").split(",") if c.strip()}
-        conts_a = {c.strip() for c in (anterior.get("contenedores") or "").split(",") if c.strip()}
-        conts_unidos = ", ".join(sorted(conts_m | conts_a))
+        # ════════════════════════════════════════════════════
+        #   FLUJO: ALERTA PREVIOS MÚLTIPLES
+        # ════════════════════════════════════════════════════
+        if st.session_state["paso"] == "previo_alerta":
+            from app.config import COL_BI as _CB2
+            conts = st.session_state.get("conts_multi_previo", [])
+            nc    = st.session_state.get("nc_cliente", "")
+            usr   = st.session_state["usuario"]
+            tiene_borrador = hay_borrador_activo(usr["id"], nc)
 
-        datos_actualizar = {}
-        if conts_unidos:
-            datos_actualizar["contenedores"] = conts_unidos
-        for campo in ("cliente", "numero_factura", "nc_interno", "motivo"):
-            if not mantener.get(campo) and anterior.get(campo):
-                datos_actualizar[campo] = anterior[campo]
-        nota_fusion = f"[Historial: continúa lo capturado en la NC {anterior['nc_externo']}] "
-        datos_actualizar["comentarios"] = nota_fusion + (mantener.get("comentarios") or "")
-        actualizar_nc_asignacion(nc_mantener_id, datos_actualizar)
-
-        # Todo lo que ya dependía de la NC anterior pasa a depender directo
-        # de la que se conserva, para mantener la jerarquía a solo 2 niveles
-        # (la más alta arriba, todo el historial abajo, sin anidar cadenas).
-        for hija in obtener_nc_hijas(nc_anterior_id):
-            actualizar_nc_asignacion(hija["id"], {"vinculada_a": nc_mantener_id})
-
-        # La NC anterior queda como historial de la que se conserva
-        actualizar_nc_asignacion(nc_anterior_id, {
-            "inhabilitada":          True,
-            "motivo_inhabilitacion": f"Historial: reemplazada por la NC {mantener['nc_externo']}",
-            "vinculada_a":           nc_mantener_id,
-        })
-        return True, None
-    except Exception as e:
-        return False, str(e)
-
-
-def actualizar_nc_asignacion(nc_id: str, datos: dict):
-    """Actualiza campos de una NC asignada. Si estos datos incluyen marcarla
-    como concluida y todavía no tenía fecha de cierre, la registra sola."""
-    try:
-        db = get_client()
-        from datetime import datetime
-        datos["fecha_actualizacion"] = datetime.utcnow().isoformat()
-        if datos.get("concluida") is True:
-            actual = obtener_nc_por_id(nc_id)
-            if not actual or not actual.get("fecha_cierre"):
-                datos["fecha_cierre"] = datetime.utcnow().isoformat()
-        db.table("nc_asignaciones").update(datos).eq("id", nc_id).execute()
-        return True
-    except Exception:
-        return False
-
-
-def reasignar_nc(nc_id: str, nuevo_responsable_id: str, nuevo_responsable_nombre: str):
-    """Reasigna el responsable de una NC y notifica."""
-    try:
-        ok = actualizar_nc_asignacion(nc_id, {
-            "responsable_id":     nuevo_responsable_id,
-            "responsable_nombre": nuevo_responsable_nombre,
-            "estado_visual":      "reasignado",
-        })
-        if ok:
-            nc = obtener_nc_por_id(nc_id)
-            crear_nc_notificacion(
-                nuevo_responsable_id, nc_id,
-                f"Se te reasignó la NC: {nc['nc_externo'] if nc else ''}"
+            st.markdown("### Servicios múltiples de previo detectados")
+            st.warning(
+                "Se detectaron contenedor(es) con 2 o más servicios programados. "
+                "Considerar que el BI únicamente maneja una sola fecha de previo desde "
+                "la primera programación hasta el posicionamiento, aunque sea en un "
+                "servicio distinto al primero. "
+                "¿Deseas ajustar manualmente las fechas de previo de manera individual?"
             )
-        return ok
-    except Exception:
-        return False
+            if tiene_borrador:
+                st.info("Se encontró un borrador guardado para esta NC. "
+                        "Puedes continuar donde lo dejaste.")
+            pa1, pa2 = st.columns(2)
+            with pa1:
+                if st.button("✅ Sí, ajustar manualmente", type="primary",
+                             width='stretch', key="previo_si"):
+                    st.session_state["paso"] = "previo_manual"
+                    if "contadores_previo" not in st.session_state:
+                        st.session_state["contadores_previo"] = {}
+                    for c in conts:
+                        if c not in st.session_state["contadores_previo"]:
+                            st.session_state["contadores_previo"][c] = 1
+                    st.rerun()
+            with pa2:
+                if st.button("No, continuar con cálculo automático",
+                             width='stretch', key="previo_no"):
+                    eliminar_borradores_nc(usr["id"], nc)
+                    st.session_state["paso"] = "confirmacion"
+                    st.rerun()
 
+        # ════════════════════════════════════════════════════
+        #   FLUJO: CAPTURA MANUAL DE PREVIOS
+        # ════════════════════════════════════════════════════
+        if st.session_state["paso"] == "previo_manual":
+            from app.calendario import calcular_desfase_regla3 as _cdr3
+            from app.validaciones import to_date as _td, calcular_montos as _cm
+            from app.config import COL_BI as _CB3
+            from datetime import datetime as _dt2
 
-def inhabilitar_nc(nc_id: str, motivo: str):
-    try:
-        return actualizar_nc_asignacion(nc_id, {
-            "inhabilitada": True,
-            "motivo_inhabilitacion": motivo,
-        })
-    except Exception:
-        return False
+            nc      = st.session_state.get("nc_cliente", "")
+            usr     = st.session_state["usuario"]
+            perfil  = st.session_state["perfiles"][st.session_state["perfil_idx"]]
+            conts   = st.session_state.get("conts_multi_previo", [])
+            df_bv   = st.session_state["df_bi_v"]
+            dias_esp = st.session_state["dias_especiales"]
 
+            if "contadores_previo" not in st.session_state:
+                st.session_state["contadores_previo"] = {c: 1 for c in conts}
 
-def marcar_seguimiento_nc(nc_id: str):
-    """Cambia el estado visual a 'seguimiento' (verde) cuando el usuario abre/edita."""
-    try:
-        nc = obtener_nc_por_id(nc_id)
-        if nc and nc.get("estado_visual") != "seguimiento":
-            actualizar_nc_asignacion(nc_id, {"estado_visual": "seguimiento"})
-    except Exception:
-        pass
+            borradores = cargar_borradores_previo(usr["id"], nc)
+            bor_dict   = {(b["contenedor"], b["previo_num"]): b for b in borradores}
 
+            # Actualizar contadores según borradores
+            for c in conts:
+                max_num = max(
+                    [b["previo_num"] for b in borradores if b["contenedor"] == c],
+                    default=0
+                )
+                cur = st.session_state["contadores_previo"].get(c, 1)
+                if max_num > cur:
+                    st.session_state["contadores_previo"][c] = max_num
 
-def concluir_nc(nc_id: str):
-    try:
-        return actualizar_nc_asignacion(nc_id, {"concluida": True})
-    except Exception:
-        return False
+            st.markdown("### Captura manual de fechas de previo")
+            st.caption("Los cambios se guardan automáticamente. "
+                       "Puedes cerrar la app y continuar después.")
 
+            completados = sum(
+                1 for c in conts
+                if any(b["contenedor"] == c and b.get("fecha_programacion")
+                       and b.get("fecha_posicionamiento") for b in borradores)
+            )
+            total = len(conts)
+            pct   = completados / total if total else 0
+            st.progress(pct,
+                text=f"{completados} de {total} contenedores completados — {int(pct*100)}%")
+            st.markdown("---")
 
-def reabrir_nc(nc_id: str):
-    """Reabre una NC concluida. Limpia la fecha de cierre — si se vuelve a
-    concluir más adelante, se registrará una fecha de cierre nueva."""
-    try:
-        return actualizar_nc_asignacion(nc_id, {"concluida": False, "fecha_cierre": None})
-    except Exception:
-        return False
+            for cont in conts:
+                bors_cont  = [b for b in borradores if b["contenedor"] == cont]
+                completado = (len(bors_cont) > 0 and
+                              all(b.get("fecha_programacion") and
+                                  b.get("fecha_posicionamiento") for b in bors_cont))
+                n_previos  = st.session_state["contadores_previo"].get(cont, 1)
 
+                ns_val = 0
+                for _, row in df_bv.iterrows():
+                    if row[_CB3["contenedor"]] == cont:
+                        try: ns_val = int(row.get("No. Servicios", 0) or 0)
+                        except: pass
+                        break
 
-def buscar_nc_asignaciones(termino: str):
-    """Busca por NC externo, interno, contenedor o factura."""
-    try:
-        db = get_client()
-        t = termino.strip().upper()
-        res = db.table("nc_asignaciones").select("*").or_(
-            f"nc_externo.ilike.%{t}%,"
-            f"nc_interno.ilike.%{t}%,"
-            f"contenedores.ilike.%{t}%,"
-            f"numero_factura.ilike.%{t}%"
-        ).execute()
-        return res.data or []
-    except Exception:
-        return []
+                lbl = (f"✅ {cont}  ({ns_val} servicios) — Completado"
+                       if completado else
+                       f"⏳ {cont}  ({ns_val} servicios) — Pendiente")
 
+                with st.expander(lbl, expanded=not completado):
+                    def parse_fecha_bor(v):
+                        """Convierte valor de BD a date de Python."""
+                        if not v:
+                            return None
+                        try:
+                            if hasattr(v, 'date'):
+                                return v.date() if callable(v.date) else v
+                            if isinstance(v, str):
+                                return _dt2.strptime(v[:10], "%Y-%m-%d").date()
+                        except:
+                            pass
+                        return None
 
-def actualizar_herencia_analisis(nc_asignacion_id: str, cliente: str, numero_factura: str):
-    """Guarda Cliente y Factura provenientes del análisis en la NC asignada."""
-    try:
-        factura_limpia = _re.sub(r'[^0-9]', '', str(numero_factura)) if numero_factura else ""
-        datos = {}
-        if cliente:
-            datos["cliente"] = cliente
-        if factura_limpia:
-            datos["numero_factura"] = factura_limpia
-        if datos:
-            actualizar_nc_asignacion(nc_asignacion_id, datos)
-        return True
-    except Exception:
-        return False
+                    for pnum in range(1, n_previos + 1):
+                        bor = bor_dict.get((cont, pnum), {})
 
+                        # Encabezado del previo con botón eliminar (solo si no es el 1)
+                        ph1, ph2 = st.columns([4, 1])
+                        with ph1:
+                            st.markdown(f"**Previo {pnum}**")
+                        with ph2:
+                            if pnum > 1:
+                                if st.button("🗑️ Eliminar",
+                                             key=f"del_{cont}_{pnum}",
+                                             width='stretch'):
+                                    # Eliminar de BD
+                                    try:
+                                        from app.database import get_client as _gc2
+                                        _db = _gc2()
+                                        _db.table("borradores_previo").delete(
+                                        ).eq("usuario_id", usr["id"]
+                                        ).eq("numero_nc", nc
+                                        ).eq("contenedor", cont
+                                        ).eq("previo_num", pnum).execute()
+                                    except:
+                                        pass
+                                    # Reducir contador
+                                    cur_n = st.session_state["contadores_previo"].get(cont, 1)
+                                    if cur_n > 1:
+                                        st.session_state["contadores_previo"][cont] = cur_n - 1
+                                    st.rerun()
 
-# ── Notificaciones ───────────────────────────────────────────────
+                        # Selectores de fecha (calendarios)
+                        fc1, fc2 = st.columns(2)
+                        with fc1:
+                            prog_date = parse_fecha_bor(bor.get("fecha_programacion"))
+                            prog = st.date_input(
+                                "Fecha programación",
+                                value=prog_date,
+                                format="DD/MM/YYYY",
+                                key=f"prog_{cont}_{pnum}"
+                            )
+                        with fc2:
+                            pos_date = parse_fecha_bor(bor.get("fecha_posicionamiento"))
+                            pos = st.date_input(
+                                "Fecha posicionamiento",
+                                value=pos_date,
+                                format="DD/MM/YYYY",
+                                key=f"pos_{cont}_{pnum}"
+                            )
 
-def crear_nc_notificacion(usuario_id: str, nc_id: str, mensaje: str):
-    try:
-        db = get_client()
-        db.table("nc_notificaciones").insert({
-            "usuario_id": usuario_id,
-            "nc_id": nc_id,
-            "mensaje": mensaje,
-        }).execute()
-        return True
-    except Exception:
-        return False
+                        # Auto-guardar SOLO si el valor cambió (evita golpear la BD
+                        # en cada rerun de Streamlit y que la app se sienta lenta)
+                        if prog and pos:
+                            try:
+                                fp  = prog.strftime("%Y-%m-%d") if hasattr(prog, 'strftime') else str(prog)
+                                fpo = pos.strftime("%Y-%m-%d")  if hasattr(pos,  'strftime') else str(pos)
+                                previo_actual = (
+                                    str(bor.get("fecha_programacion") or "")[:10],
+                                    str(bor.get("fecha_posicionamiento") or "")[:10],
+                                )
+                                if (fp, fpo) != previo_actual:
+                                    guardar_previo_borrador(usr["id"], nc, cont, pnum, fp, fpo)
+                            except:
+                                pass
 
+                        if pnum < n_previos:
+                            st.divider()
 
-def obtener_notificaciones_pendientes(usuario_id: str):
-    try:
-        db = get_client()
-        res = db.table("nc_notificaciones").select("*").eq(
-            "usuario_id", usuario_id
-        ).eq("vista", False).order("fecha_creacion", desc=True).execute()
-        return res.data or []
-    except Exception:
-        return []
+                    if n_previos < 50:
+                        if st.button("＋ Agregar otro previo",
+                                     key=f"add_{cont}"):
+                            st.session_state["contadores_previo"][cont] = n_previos + 1
+                            st.rerun()
 
+            st.markdown("---")
+            if st.button("💾 Calcular desfases y continuar",
+                         type="primary", width='stretch',
+                         key="calc_previos"):
+                desfases = st.session_state["desfases"]
+                dias_p   = perfil.get("dias_previo", 3)
+                bors_fin = cargar_borradores_previo(usr["id"], nc)
 
-def marcar_notificaciones_vistas(usuario_id: str):
-    try:
-        db = get_client()
-        db.table("nc_notificaciones").update({"vista": True}).eq(
-            "usuario_id", usuario_id
-        ).eq("vista", False).execute()
-        return True
-    except Exception:
-        return False
+                for cont in conts:
+                    bors = sorted(
+                        [b for b in bors_fin if b["contenedor"] == cont],
+                        key=lambda x: x["previo_num"]
+                    )
+                    total_d = 0
+                    for b in bors:
+                        try:
+                            fp  = _dt2.strptime(b["fecha_programacion"],  "%Y-%m-%d").date()
+                            fpo = _dt2.strptime(b["fecha_posicionamiento"], "%Y-%m-%d").date()
+                            d, _ = _cdr3(fp, fpo, dias_esp, dias_p)
+                            total_d += d
+                        except: pass
 
+                    if cont in desfases:
+                        desfases[cont]["desfase_previo"] = total_d
+                        desfases[cont]["total_desfase"]  = (
+                            total_d +
+                            desfases[cont].get("desfase_ffcc", 0) +
+                            desfases[cont].get("desfase_carretero", 0)
+                        )
 
-# ── Detección de contenedores duplicados entre NCs ──────────────
+                st.session_state["desfases"] = desfases
+                st.session_state["montos"]   = _cm(df_bv, desfases)
+                st.session_state["paso"]     = "confirmacion"
+                st.rerun()
 
-def verificar_contenedores_en_nc(contenedores: list, excluir_nc_id: str = None):
-    """
-    Busca si alguno de los contenedores ya existe en otra NC asignada.
-    Retorna lista de coincidencias: [{nc_id, nc_externo, contenedor,
-    responsable_id, responsable_nombre, concluida, inhabilitada}]
-    """
-    try:
-        db = get_client()
-        res = db.table("nc_asignaciones").select(
-            "id, nc_externo, contenedores, responsable_id, responsable_nombre, "
-            "concluida, inhabilitada"
-        ).execute()
-        todas = res.data or []
-        coincidencias = []
-        for nc in todas:
-            if excluir_nc_id and nc["id"] == excluir_nc_id:
-                continue
-            if nc.get("inhabilitada"):
-                continue
-            conts_nc = (nc.get("contenedores") or "").split(",")
-            conts_nc = [c.strip() for c in conts_nc if c.strip()]
-            for c in contenedores:
-                if c in conts_nc:
-                    coincidencias.append({
-                        "nc_id":              nc["id"],
-                        "nc_externo":         nc["nc_externo"],
-                        "contenedor":         c,
-                        "responsable_id":     nc.get("responsable_id"),
-                        "responsable_nombre": nc.get("responsable_nombre", ""),
-                        "concluida":          nc.get("concluida", False),
-                    })
-        return coincidencias
-    except Exception:
-        return []
+        # ════════════════════════════════════════════════════
+        #   FLUJO: CONFIRMACIÓN DE DESFASES
+        # ════════════════════════════════════════════════════
+        if st.session_state["paso"] == "confirmacion":
+            desfases = st.session_state["desfases"]
 
+            st.markdown("### Resumen de días de desfase detectados")
+            resumen = [{"Contenedor": c,
+                        "Previo":     d["desfase_previo"],
+                        "FFCC":       d["desfase_ffcc"],
+                        "Carretero":  d["desfase_carretero"],
+                        "Total":      d["total_desfase"]}
+                       for c, d in desfases.items()]
+            st.dataframe(pd.DataFrame(resumen), width='stretch',
+                         hide_index=True)
 
-def registrar_duplicado_revisado(nc_id: str, contenedor: str, revisado_por: str):
-    try:
-        db = get_client()
-        db.table("nc_duplicados_revisados").insert({
-            "nc_id": nc_id,
-            "contenedor": contenedor,
-            "revisado_por": revisado_por,
-        }).execute()
-        return True
-    except Exception:
-        return False
+            st.markdown("**¿Estás de acuerdo con los días de desfase calculados?**")
+            cc1, cc2 = st.columns(2)
+            with cc1:
+                if st.button("✅ Sí, generar reporte", type="primary",
+                             width='stretch', key="btn_si"):
+                    st.session_state["paso"] = "reporte"
+                    st.rerun()
+            with cc2:
+                if st.button("✏️ No, ajustar manualmente",
+                             width='stretch', key="btn_no"):
+                    st.session_state["paso"] = "ajuste"
+                    st.rerun()
 
+        # ════════════════════════════════════════════════════
+        #   FLUJO: AJUSTE MANUAL
+        # ════════════════════════════════════════════════════
+        if st.session_state["paso"] == "ajuste":
+            desfases = st.session_state["desfases"]
+            st.markdown("### Ajuste Manual de Días de Desfase")
+
+            dias_global  = st.number_input("Días para TODOS los seleccionados",
+                                            min_value=0, value=0)
+            contenedores = list(desfases.keys())
+            checks, entries = {}, {}
+
+            for cont in contenedores:
+                ac1, ac2, ac3 = st.columns([1,2,1])
+                with ac1:
+                    checks[cont] = st.checkbox(cont, value=True, key=f"chk_{cont}")
+                with ac2:
+                    st.caption(f"Calculado: {desfases[cont]['total_desfase']} días")
+                with ac3:
+                    if not checks[cont]:
+                        entries[cont] = st.number_input(
+                            "Días", min_value=0, value=0,
+                            key=f"d_{cont}", label_visibility="collapsed"
+                        )
+
+            if st.button("💾 Guardar y generar reporte", type="primary",
+                         width='stretch'):
+                for cont in contenedores:
+                    if checks.get(cont, True):
+                        desfases[cont]["total_desfase"] = int(dias_global)
+                    else:
+                        desfases[cont]["total_desfase"] = int(entries.get(cont, 0))
+                st.session_state["desfases"] = desfases
+                st.session_state["montos"]   = calcular_montos(
+                    st.session_state["df_bi_v"], desfases
+                )
+                st.session_state["paso"] = "reporte"
+                st.rerun()
+
+        # ════════════════════════════════════════════════════
+        #   FLUJO: GENERAR REPORTE
+        # ════════════════════════════════════════════════════
+        if st.session_state["paso"] == "reporte":
+            df_tv     = st.session_state["df_tab_v"]
+            df_bv     = st.session_state["df_bi_v"]
+            desfases  = st.session_state["desfases"]
+            montos    = st.session_state["montos"]
+            fecha_sol = st.session_state["fecha_solicitud"]
+            nc        = st.session_state["nc_cliente"]
+            fecha_rev = st.session_state["fecha_revision"]
+
+            # Alertas finales
+            sin_alm = [row[COL_BI["contenedor"]]
+                       for _, row in df_bv.iterrows()
+                       if float(row.get(COL_BI["alm_qty"], 0) or 0) <= 0]
+            if sin_alm:
+                st.warning(f"Sin almacenajes cobrados para: {', '.join(sin_alm)}")
+
+            admon_sin = [row[COL_BI["contenedor"]]
+                         for _, row in df_bv.iterrows()
+                         if float(row.get(COL_BI["alm_qty"], 0) or 0) <= 0
+                         and float(row.get(COL_BI["admon_qty"], 0) or 0) > 0]
+            if admon_sin:
+                st.warning(f"Cobro Admin y Control sin almacenajes: "
+                           f"{', '.join(admon_sin)}")
+
+            # ── Generar el reporte y hacer la herencia UNA SOLA VEZ ──
+            # (sin esta protección, este bloque se re-ejecutaba en cada clic
+            # en cualquier parte de la app, regenerando el Excel y creando
+            # NCs huérfanas duplicadas una y otra vez)
+            if not st.session_state.get("reporte_bytes"):
+                with st.spinner("Generando reporte Excel..."):
+                    buffer = io.BytesIO()
+                    generar_reporte(df_tv, df_bv, desfases, montos,
+                                    fecha_sol, fecha_rev, nc, {}, buffer)
+                    buffer.seek(0)
+                    st.session_state["reporte_bytes"] = buffer.getvalue()
+
+                # ── Heredar Cliente y Factura hacia NC Asignada (una vez) ──
+                cliente_val  = ""
+                factura_val  = ""
+                for _, row in df_bv.iterrows():
+                    if not cliente_val and row.get(COL_BI.get("cliente")):
+                        cliente_val = str(row.get(COL_BI.get("cliente")))
+                    if not factura_val and row.get(COL_BI.get("no_factura")):
+                        factura_val = str(row.get(COL_BI.get("no_factura")))
+                    if cliente_val and factura_val:
+                        break
+
+                nc_norm = nc.strip().upper()
+                nc_existente = next(
+                    (n for n in obtener_nc_asignaciones()
+                     if n["nc_externo"].strip().upper() == nc_norm), None
+                )
+                # Análisis ya NO crea NC: solo rellena datos si la NC existe.
+                # Si no existe, el análisis continúa y se avisa (según rol).
+                if nc_existente:
+                    actualizar_herencia_analisis(nc_existente["id"], cliente_val, factura_val)
+                    st.session_state["nc_no_registrada"] = False
+                else:
+                    st.session_state["nc_no_registrada"] = True
+                invalidar_cache_nc()
+
+            excel_bytes = st.session_state["reporte_bytes"]
+
+            # ── Registrar en BD al descargar ──────────────────
+            if "nc_registrada" not in st.session_state:
+                st.session_state["nc_registrada"] = False
+
+            st.success("¡Reporte generado exitosamente!")
+            if st.session_state.get("nc_no_registrada"):
+                if es_admin:
+                    st.warning(f"⚠️ La NC **{nc}** no está registrada en el sistema. El análisis "
+                               "continuó normalmente, pero no se rellenaron cliente/factura. "
+                               "Puedes darla de alta en **Gestión NC → Asignar NC**.")
+                else:
+                    st.warning(f"⚠️ La NC **{nc}** no está registrada en el sistema. El análisis "
+                               "continuó normalmente; avisa al administrador para que la dé de alta.")
+
+            if st.session_state.get("nc_registro_error"):
+                st.error("❌ El reporte se descargó, pero la NC **no se guardó en Historial NC**. "
+                         "Vuelve a pulsar «Descargar Reporte Excel» para reintentar. "
+                         f"Detalle técnico: {st.session_state['nc_registro_error']}")
+            elif st.session_state.get("nc_registrada"):
+                st.caption("✅ NC guardada en Historial NC.")
+
+            # IMPORTANTE: los valores se "congelan" como argumentos por defecto.
+            # Streamlit ejecuta este callback al INICIO del siguiente rerun, cuando
+            # variables globales como `nc` ya fueron reasignadas por otros bucles
+            # del script (p. ej. `for nc in todas:` en Gestión NC), lo que guardaba
+            # un diccionario completo como número de NC en el Historial.
+            def on_download(nc_c=str(nc), df_c=df_bv, montos_c=montos,
+                            uid_c=usuario["id"], unombre_c=nombre_user,
+                            fsol_c=fecha_sol):
+                if not st.session_state["nc_registrada"]:
+                    contenedores_list = df_c[COL_BI["contenedor"]].tolist()
+                    facturas_list = (df_c[COL_BI["no_factura"]].tolist()
+                                     if COL_BI["no_factura"] in df_c.columns else [])
+                    monto_total = sum(m.get("monto_total", 0)
+                                      for m in montos_c.values())
+                    ok_reg, msg_reg = registrar_nc(
+                        numero_nc=nc_c,
+                        usuario_id=uid_c,
+                        usuario_nombre=unombre_c,
+                        contenedores=contenedores_list,
+                        facturas=facturas_list,
+                        monto_total=monto_total,
+                        fecha_solicitud_nc=fsol_c
+                    )
+                    if ok_reg:
+                        st.session_state["nc_registrada"] = True
+                        st.session_state["nc_registro_error"] = ""
+                    else:
+                        # Antes el error se ignoraba en silencio y parecía guardado
+                        st.session_state["nc_registro_error"] = str(msg_reg)
+
+            st.download_button(
+                label="⬇️ Descargar Reporte Excel",
+                data=excel_bytes,
+                file_name=f"{nc or 'reporte'}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                width='stretch',
+                on_click=on_download
+            )
+
+            st.markdown("---")
+            if st.button("↺ Realizar nuevo análisis", width='stretch'):
+                st.session_state["df_tab"]             = None
+                st.session_state["df_bi"]              = None
+                st.session_state["df_tab_v"]           = None
+                st.session_state["df_bi_v"]            = None
+                st.session_state["desfases"]           = {}
+                st.session_state["montos"]             = {}
+                st.session_state["alertas"]            = []
+                st.session_state["paso"]               = "inicio"
+                st.session_state["uploader_key"]      += 1
+                st.session_state["nc_registrada"]      = False
+                st.session_state["nc_registro_error"]  = ""
+                st.session_state["reporte_bytes"]      = None
+                st.session_state["cond_manual"]        = False
+                st.session_state["dias_manual_previo"] = 0
+                st.session_state["dias_manual_ffcc"]   = 0
+                st.session_state["dias_manual_carr"]   = 0
+                st.rerun()
+
+    # ── Panel derecho: Calendario ─────────────────────────────
+    with col_der:
+        st.markdown("<div class='sec-hdr'>Días No Hábiles — Calendario</div>",
+                    unsafe_allow_html=True)
+
+        hoy      = hoy_mx()
+        festivos = get_festivos_oficiales(st.session_state["cal_anio"])
+        comentarios_dias = st.session_state.get("dias_comentarios", {})
+        meses_es = ["Enero","Febrero","Marzo","Abril","Mayo","Junio",
+                    "Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"]
+
+        cn1, cn2, cn3 = st.columns([1,3,1])
+        with cn1:
+            if st.button("‹", key="cant"):
+                if st.session_state["cal_mes"] == 1:
+                    st.session_state["cal_mes"]  = 12
+                    st.session_state["cal_anio"] -= 1
+                else:
+                    st.session_state["cal_mes"] -= 1
+                st.rerun()
+        with cn2:
+            st.markdown(f"**{meses_es[st.session_state['cal_mes']-1]} "
+                        f"{st.session_state['cal_anio']}**")
+        with cn3:
+            if st.button("›", key="csig"):
+                if st.session_state["cal_mes"] == 12:
+                    st.session_state["cal_mes"]  = 1
+                    st.session_state["cal_anio"] += 1
+                else:
+                    st.session_state["cal_mes"] += 1
+                st.rerun()
+
+        cal     = calendar.Calendar(firstweekday=0)
+        semanas = cal.monthdayscalendar(st.session_state["cal_anio"],
+                                         st.session_state["cal_mes"])
+        dias_n  = ["Lu","Ma","Mi","Ju","Vi","Sa","Do"]
+        hcols   = st.columns(7)
+        for i, d in enumerate(dias_n):
+            color = "#E65100" if i >= 5 else "#666"
+            hcols[i].markdown(
+                f"<div style='text-align:center;color:{color};"
+                f"font-size:12px;font-weight:bold;'>{d}</div>",
+                unsafe_allow_html=True
+            )
+
+        for semana in semanas:
+            dcols = st.columns(7)
+            for i, dia in enumerate(semana):
+                if dia == 0:
+                    dcols[i].write("")
+                    continue
+                fecha    = date(st.session_state["cal_anio"],
+                                st.session_state["cal_mes"], dia)
+                es_finde = i >= 5
+                es_fest  = fecha in festivos
+                es_esp   = fecha in comentarios_dias
+                es_hoy   = fecha == hoy
+
+                if es_hoy:      bg = "🟦"
+                elif es_esp:    bg = "🟨"
+                elif es_fest:   bg = "🟧"
+                elif es_finde:  bg = "⬜"
+                else:           bg = "  "
+
+                # Texto al pasar el mouse: comentario del admin (especial) y/o nombre del festivo
+                _tips = []
+                if es_esp:
+                    _tips.append("Día especial: " + (comentarios_dias.get(fecha) or "sin comentario"))
+                if es_fest:
+                    _tips.append("Festivo: " + nombre_festivo(fecha))
+                _tip = "\n".join(_tips) or None
+
+                if dcols[i].button(f"{bg}{dia}", key=f"c_{fecha}",
+                                    width='stretch', help=_tip):
+                    # Solo el administrador puede marcar/quitar días especiales
+                    if es_admin:
+                        st.session_state["cal_dia_sel"] = fecha
+                        st.rerun()
+
+        st.markdown("🟧 Festivo · 🟨 Especial · ⬜ Fin de semana · 🟦 Hoy")
+
+        # ── Edición (solo admin): comentario obligatorio al dar de alta ──
+        _sel = st.session_state.get("cal_dia_sel")
+        if es_admin and _sel:
+            with st.container(border=True):
+                st.markdown(f"**📅 {_sel.strftime('%d/%m/%Y')}**")
+                if _sel in comentarios_dias:
+                    st.caption(f"Día especial actual — «{comentarios_dias[_sel]}»")
+                    ca, cb = st.columns(2)
+                    if ca.button("🗑️ Quitar día especial", key="cal_quitar", width='stretch'):
+                        quitar_dia_especial_db(_sel)
+                        _cached_dias_especiales.clear()
+                        st.session_state["cal_dia_sel"] = None
+                        st.rerun()
+                    if cb.button("Cerrar", key="cal_cerrar_a", width='stretch'):
+                        st.session_state["cal_dia_sel"] = None
+                        st.rerun()
+                else:
+                    if _sel in festivos:
+                        st.caption(f"Es festivo oficial ({nombre_festivo(_sel)}). "
+                                   "Puedes marcarlo también como especial si lo necesitas.")
+                    _coment = st.text_input("Comentario (¿por qué es día especial?)",
+                                            key=f"cal_coment_{_sel}")
+                    ca, cb = st.columns(2)
+                    if ca.button("💾 Marcar como especial", key="cal_guardar",
+                                 type="primary", width='stretch'):
+                        if not _coment.strip():
+                            st.warning("El comentario es obligatorio.")
+                        else:
+                            ok_d, err_d = agregar_dia_especial_db(
+                                _sel, _coment.strip(), usuario["nombre_completo"])
+                            if ok_d:
+                                _cached_dias_especiales.clear()
+                                st.session_state["cal_dia_sel"] = None
+                                st.rerun()
+                            else:
+                                st.error(f"No se pudo guardar: {err_d}")
+                    if cb.button("Cancelar", key="cal_cerrar_b", width='stretch'):
+                        st.session_state["cal_dia_sel"] = None
+                        st.rerun()
+        elif not es_admin:
+            st.caption("Los días especiales los define el administrador. "
+                       "Pasa el mouse sobre un día marcado para ver el motivo.")
+
+        if comentarios_dias:
+            with st.expander(f"Días especiales vigentes ({len(comentarios_dias)})"):
+                for d in sorted(comentarios_dias):
+                    st.write(f"🟨 **{d.strftime('%d/%m/%Y')}** — {comentarios_dias[d] or 'sin comentario'}")
+        else:
+            st.caption("Ningún día especial marcado")
+
+        if es_admin and comentarios_dias:
+            _conf = st.checkbox("Confirmar: quitar TODOS los días especiales", key="cal_conf_limpiar")
+            if st.button("🗑️ Limpiar días especiales", disabled=not _conf):
+                limpiar_dias_especiales_db()
+                _cached_dias_especiales.clear()
+                st.session_state["cal_conf_limpiar"] = False
+                st.session_state["cal_dia_sel"] = None
+                st.rerun()
 
 # ════════════════════════════════════════════════════════════════
-#   MÓDULO "TRANSFERENCIAS"
+#   PESTAÑA 2 — HISTORIAL NC
 # ════════════════════════════════════════════════════════════════
+with nav[1]:
+    st.markdown("<div class='sec-hdr'>Historial de Notas de Crédito</div>",
+                unsafe_allow_html=True)
 
-# ── Catálogo de Recintos (código fijo + nombres/alias) ───────────
+    with st.spinner("Cargando historial..."):
+        historial_completo = obtener_historial(2000)
 
-def obtener_transferencias_recintos(solo_aprobados=False):
-    """Catálogo completo de Recintos. Un nombre pendiente de aprobar
-    (aprobado=False) se sigue usando para resolver códigos — solo_aprobados
-    se usa para la vista de solo-lectura de códigos ya oficiales."""
-    try:
-        db = get_client()
-        q = db.table("transferencias_recintos").select("*").order("codigo")
-        if solo_aprobados:
-            q = q.eq("aprobado", True)
-        res = q.execute()
-        return res.data or []
-    except Exception:
-        return []
+    if not historial_completo:
+        st.info("No hay notas de crédito registradas aún.")
+    else:
+        # ── Filtros y búsqueda ────────────────────────────────
+        sf1, sf2, sf3 = st.columns([2, 2, 2])
+        with sf1:
+            busqueda = st.text_input("🔍 Buscar por NC, contenedor o factura",
+                                      placeholder="Ej: NC-2585 / MSCU1234567 / FAC-001",
+                                      key="hist_busqueda")
+        with sf2:
+            usuarios_hist = sorted(set(r["usuario_nombre"] for r in historial_completo))
+            filtro_usuario = st.selectbox("👤 Filtrar por usuario",
+                                          ["Todos"] + usuarios_hist,
+                                          key="hist_usuario")
+        with sf3:
+            col_f1, col_f2 = st.columns(2)
+            fecha_desde = col_f1.date_input("Analizada desde", value=None,
+                                             key="hist_desde",
+                                             format="DD/MM/YYYY")
+            fecha_hasta = col_f2.date_input("Analizada hasta", value=None,
+                                             key="hist_hasta",
+                                             format="DD/MM/YYYY")
 
+        # ── Aplicar filtros ───────────────────────────────────
+        historial = historial_completo.copy()
 
-def proponer_transferencias_recinto(codigo: int, nombre: str, usuario_id: str, usuario_nombre: str):
-    """Cualquier usuario puede proponer un nombre nuevo asociado a un
-    código YA EXISTENTE. Se guarda con aprobado=False pero se usa de
-    inmediato para procesar la fila que lo originó."""
-    try:
-        db = get_client()
-        res = db.table("transferencias_recintos").insert({
-            "codigo": codigo,
-            "nombre": nombre,
-            "es_original": False,
-            "aprobado": False,
-            "propuesto_por": usuario_id,
-            "propuesto_por_nombre": usuario_nombre,
-        }).execute()
-        if res.data:
-            return True, res.data[0]["id"]
-        return False, None
-    except Exception as e:
-        return False, str(e)
+        if busqueda.strip():
+            termino = busqueda.strip().upper()
+            # Buscar por NC directo
+            por_nc = [r for r in historial if termino in r["numero_nc"].upper()]
+            ids_nc = {r["id"] for r in por_nc}
 
+            # Buscar por contenedor o factura en detalle_nc
+            try:
+                from app.database import get_client as _gc
+                db2 = _gc()
+                res2 = db2.table("detalle_nc").select(
+                    "historial_nc_id, contenedor, numero_factura"
+                ).or_(
+                    f"contenedor.ilike.%{termino}%,"
+                    f"numero_factura.ilike.%{termino}%"
+                ).execute()
+                ids_detalle = {r["historial_nc_id"] for r in (res2.data or [])}
+            except Exception:
+                ids_detalle = set()
 
-def aprobar_transferencias_recinto(recinto_id: str, aprobado_por: str):
-    try:
-        db = get_client()
-        db.table("transferencias_recintos").update({
-            "aprobado": True,
-            "aprobado_por": aprobado_por,
-            "fecha_aprobacion": datetime.now().isoformat(),
-        }).eq("id", recinto_id).execute()
-        return True
-    except Exception:
-        return False
+            ids_total = ids_nc | ids_detalle
+            historial = [r for r in historial if r["id"] in ids_total]
 
+        if filtro_usuario != "Todos":
+            historial = [r for r in historial
+                        if r["usuario_nombre"] == filtro_usuario]
 
-def rechazar_transferencias_recinto(recinto_id: str):
-    """Elimina una propuesta de nombre de recinto que el Admin decide no
-    aprobar (no borra el código, solo el nombre propuesto)."""
-    try:
-        db = get_client()
-        db.table("transferencias_recintos").delete().eq("id", recinto_id).execute()
-        return True
-    except Exception:
-        return False
+        # Fechas en hora de MÉXICO (antes se usaba la fecha UTC y un análisis
+        # descargado después de las 6 p.m. aparecía con el día siguiente)
+        def _fecha_mx(iso):
+            if not iso:
+                return None
+            try:
+                dt = datetime.fromisoformat(str(iso).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=ZoneInfo("UTC"))
+                return dt.astimezone(ZONA_MX).date()
+            except Exception:
+                return None
 
+        if fecha_desde:
+            historial = [r for r in historial
+                        if _fecha_mx(r.get("fecha_creacion")) and
+                        _fecha_mx(r.get("fecha_creacion")) >= fecha_desde]
 
-# ── Catálogo de Navieras (código + nombre, alta directa por Admin) ──
+        if fecha_hasta:
+            historial = [r for r in historial
+                        if _fecha_mx(r.get("fecha_creacion")) and
+                        _fecha_mx(r.get("fecha_creacion")) <= fecha_hasta]
 
-def obtener_transferencias_navieras():
-    try:
-        db = get_client()
-        res = db.table("transferencias_navieras").select("*").order("codigo").execute()
-        return res.data or []
-    except Exception:
-        return []
+        # ── Paginación ────────────────────────────────────────
+        REGISTROS_POR_PAG = 20
+        total_regs  = len(historial)
+        total_pags  = max(1, -(-total_regs // REGISTROS_POR_PAG))  # ceil division
 
+        if "hist_pag" not in st.session_state:
+            st.session_state["hist_pag"] = 1
 
-def crear_transferencias_naviera(codigo: int, nombre: str):
-    try:
-        db = get_client()
-        db.table("transferencias_navieras").insert({
-            "codigo": codigo,
-            "nombre": nombre,
-        }).execute()
-        return True
-    except Exception:
-        return False
+        # Reset página si cambió el filtro
+        if st.session_state.get("hist_filtro_prev") != (busqueda, filtro_usuario, fecha_desde, fecha_hasta):
+            st.session_state["hist_pag"] = 1
+            st.session_state["hist_filtro_prev"] = (busqueda, filtro_usuario, fecha_desde, fecha_hasta)
 
+        pag_actual = st.session_state["hist_pag"]
 
-def eliminar_transferencias_naviera(naviera_id: str):
-    try:
-        db = get_client()
-        db.table("transferencias_navieras").delete().eq("id", naviera_id).execute()
-        return True
-    except Exception:
-        return False
+        # Controles de paginación arriba
+        pc1, pc2, pc3 = st.columns([1, 3, 1])
+        with pc1:
+            if st.button("◀ Anterior", disabled=pag_actual <= 1, key="pag_ant"):
+                st.session_state["hist_pag"] -= 1
+                st.rerun()
+        with pc2:
+            inicio = (pag_actual - 1) * REGISTROS_POR_PAG + 1
+            fin    = min(pag_actual * REGISTROS_POR_PAG, total_regs)
+            st.markdown(f"<div style='text-align:center;padding:6px;font-size:13px;'>"
+                        f"Mostrando <b>{inicio}–{fin}</b> de <b>{total_regs}</b> registros "
+                        f"— Página <b>{pag_actual}</b> de <b>{total_pags}</b></div>",
+                        unsafe_allow_html=True)
+        with pc3:
+            if st.button("Siguiente ▶", disabled=pag_actual >= total_pags, key="pag_sig"):
+                st.session_state["hist_pag"] += 1
+                st.rerun()
 
+        st.markdown("---")
 
-# ── Notificaciones (recinto propuesto pendiente de aprobar) ─────
+        # ── Registros de la página actual ─────────────────────
+        idx_inicio = (pag_actual - 1) * REGISTROS_POR_PAG
+        idx_fin    = idx_inicio + REGISTROS_POR_PAG
+        pag_regs   = historial[idx_inicio:idx_fin]
 
-def crear_transferencias_notificacion(usuario_id: str, recinto_id: str, mensaje: str):
-    try:
-        db = get_client()
-        db.table("transferencias_notificaciones").insert({
-            "usuario_id": usuario_id,
-            "recinto_id": recinto_id,
-            "mensaje": mensaje,
-        }).execute()
-        return True
-    except Exception:
-        return False
+        if not pag_regs:
+            st.info("No se encontraron registros con los filtros aplicados.")
+        else:
+            # Fecha de solicitud por NC según Gestión NC (respaldo para registros viejos)
+            _fsol_gestion = {}
+            for _a in _cached_nc_asignaciones():
+                _k = str(_a.get("nc_externo") or "").strip().upper().replace(" ", "")
+                if _k and _a.get("fecha_solicitud") and _k not in _fsol_gestion:
+                    _fsol_gestion[_k] = _a["fecha_solicitud"]
+            for reg in pag_regs:
+                _f_an = _fecha_mx(reg.get("fecha_creacion"))
+                fecha_str = _f_an.strftime("%d/%m/%Y") if _f_an else "—"
+                fecha_hora_str = fecha_hora_mx(reg.get("fecha_creacion"))
+                try:
+                    # Si el registro no la trae (análisis anteriores al 20/10/2026),
+                    # se toma la fecha de solicitud capturada en Gestión NC
+                    _fs = reg.get("fecha_solicitud_nc") or _fsol_gestion.get(
+                        str(reg.get("numero_nc") or "").strip().upper().replace(" ", ""))
+                    fsol_str = date.fromisoformat(str(_fs)[:10]).strftime("%d/%m/%Y") if _fs else "—"
+                except Exception:
+                    fsol_str = "—"
+                monto_str = f"${reg['monto_total']:,.2f}" if reg["monto_total"] else "$0.00"
 
+                with st.expander(
+                    f"📄 {reg['numero_nc']}  —  Analizada {fecha_str}  —  Solicitud NC {fsol_str}  —  "
+                    f"{reg['usuario_nombre']}  —  {monto_str}"
+                ):
+                    col_info, col_acc = st.columns([3, 1])
+                    with col_info:
+                        st.write(f"**Fecha de análisis:** {fecha_hora_str}")
+                        st.write(f"**Fecha de solicitud NC:** {fsol_str}")
+                        st.write(f"**Usuario:** {reg['usuario_nombre']}")
+                        st.write(f"**Contenedores:** {reg['total_contenedores']}")
+                        st.write(f"**Monto Total:** {monto_str}")
 
-def obtener_transferencias_notificaciones_pendientes(usuario_id: str):
-    try:
-        db = get_client()
-        res = db.table("transferencias_notificaciones").select("*").eq(
-            "usuario_id", usuario_id
-        ).eq("vista", False).order("fecha_creacion", desc=True).execute()
-        return res.data or []
-    except Exception:
-        return []
+                        if st.button("🔍 Ver Detalle", key=f"det_{reg['id']}"):
+                            with st.spinner("Cargando detalle..."):
+                                detalle = obtener_detalle_nc(reg["id"])
+                            if detalle:
+                                df_det = pd.DataFrame(detalle)
+                                df_det.columns = ["Contenedor", "N° Factura"]
+                                st.dataframe(df_det, width='stretch',
+                                             hide_index=True)
+                            else:
+                                st.info("Sin detalle disponible.")
 
+                    with col_acc:
+                        if es_admin:
+                            if st.button("🗑️ Eliminar", key=f"del_{reg['id']}",
+                                         type="secondary"):
+                                if eliminar_nc(reg["id"]):
+                                    st.success("Registro eliminado")
+                                    st.rerun()
+                                else:
+                                    st.error("Error al eliminar")
 
-def marcar_transferencias_notificaciones_vistas(usuario_id: str):
-    try:
-        db = get_client()
-        db.table("transferencias_notificaciones").update({"vista": True}).eq(
-            "usuario_id", usuario_id
-        ).eq("vista", False).execute()
-        return True
-    except Exception:
-        return False
-
-
-# ── Bitácora de casos (folio + responsable informativo, SIN estados) ──
-
-def registrar_transferencia(folio: str, responsable: str, usuario_id: str,
-                             usuario_nombre: str, filas: list):
-    """
-    Registra un caso de Transferencias ya generado. filas: lista de dicts
-    con las llaves contenedor, id_solicitante, linea_op_texto,
-    type_arch_iso, recinto_origen_codigo, recinto_destino_codigo.
-    """
-    try:
-        db = get_client()
-        res = db.table("transferencias_casos").insert({
-            "folio":            folio,
-            "responsable":      responsable,
-            "usuario_id":       usuario_id,
-            "usuario_nombre":   usuario_nombre,
-            "total_contenedores": len(filas),
-        }).execute()
-
-        if not res.data:
-            return False, "Error al registrar el caso"
-
-        caso_id = res.data[0]["id"]
-
-        detalles = []
-        for f in filas:
-            detalles.append({
-                "caso_id":               caso_id,
-                "contenedor":            f.get("contenedor"),
-                "id_solicitante":        f.get("id_solicitante"),
-                "linea_op":              f.get("linea_op_texto"),
-                "type_arch_iso":         f.get("type_arch_iso"),
-                "recinto_origen_codigo": f.get("recinto_origen_codigo"),
-                "recinto_destino_codigo":f.get("recinto_destino_codigo"),
-            })
-        if detalles:
-            db.table("transferencias_detalle").insert(detalles).execute()
-
-        return True, caso_id
-    except Exception as e:
-        return False, str(e)
-
-
-def obtener_transferencias_casos(limite: int = 2000):
-    try:
-        db = get_client()
-        res = db.table("transferencias_casos").select(
-            "id, folio, responsable, usuario_nombre, fecha_creacion, total_contenedores"
-        ).order("fecha_creacion", desc=True).limit(limite).execute()
-        return res.data or []
-    except Exception:
-        return []
-
-
-def obtener_transferencias_detalle(caso_id: str):
-    try:
-        db = get_client()
-        res = db.table("transferencias_detalle").select(
-            "contenedor, id_solicitante, linea_op, type_arch_iso, "
-            "recinto_origen_codigo, recinto_destino_codigo"
-        ).eq("caso_id", caso_id).execute()
-        return res.data or []
-    except Exception:
-        return []
-
-
-def folio_transferencia_existe(folio: str):
-    """Verifica si un folio ya fue usado (comparación normalizada)."""
-    try:
-        db = get_client()
-        res = db.table("transferencias_casos").select("id, folio").execute()
-        folio_norm = str(folio).strip().upper()
-        for c in (res.data or []):
-            if str(c.get("folio", "")).strip().upper() == folio_norm:
-                return True
-        return False
-    except Exception:
-        return False
-
-
-def siguiente_folio_transferencia():
-    """
-    Calcula el siguiente folio de Transferencias: toma el folio numérico
-    más alto ya guardado en transferencias_casos y regresa el siguiente,
-    como texto de 5 dígitos con ceros a la izquierda (ej. '00001',
-    '00002', ...). Folios antiguos que no sean puramente numéricos (si se
-    llegó a capturar alguno a mano antes de este cambio) se ignoran para
-    este cálculo, no truenan el conteo.
-    """
-    try:
-        db = get_client()
-        res = db.table("transferencias_casos").select("folio").execute()
-        maximo = 0
-        for c in (res.data or []):
-            folio = str(c.get("folio", "")).strip()
-            if folio.isdigit():
-                maximo = max(maximo, int(folio))
-        return f"{maximo + 1:05d}"
-    except Exception:
-        return "00001"
-
-
-def registrar_transferencia_auto(responsable: str, usuario_id: str,
-                                  usuario_nombre: str, filas: list, intentos: int = 5):
-    """
-    Genera un folio automático, único e incremental (siguiente_folio_transferencia)
-    y registra el caso con él. Si por una coincidencia muy rara el folio ya
-    existe al momento de guardar (dos personas procesando casi al mismo
-    tiempo), se vuelve a generar el siguiente y se reintenta.
-
-    Regresa (True, caso_id, folio) o (False, error, None).
-    """
-    for _ in range(intentos):
-        folio = siguiente_folio_transferencia()
-        if folio_transferencia_existe(folio):
-            continue
-        ok, resultado = registrar_transferencia(folio, responsable, usuario_id,
-                                                  usuario_nombre, filas)
-        if ok:
-            return True, resultado, folio
-        return False, resultado, None
-    return False, "No se pudo generar un folio único después de varios intentos.", None
-
+        # Controles de paginación abajo también
+        st.markdown("---")
+        pb1, pb2, pb3 = st.columns([1, 3, 1])
+        with pb1:
+            if st.button("◀ Anterior", disabled=pag_actual <= 1, key="pag_ant2"):
+                st.session_state["hist_pag"] -= 1
+                st.rerun()
+        with pb2:
+            st.markdown(f"<div style='text-align:center;padding:6px;font-size:13px;'>"
+                        f"Página <b>{pag_actual}</b> de <b>{total_pags}</b></div>",
+                        unsafe_allow_html=True)
+        with pb3:
+            if st.button("Siguiente ▶", disabled=pag_actual >= total_pags, key="pag_sig2"):
+                st.session_state["hist_pag"] += 1
+                st.rerun()
 
 # ════════════════════════════════════════════════════════════════
-#   SOLICITUDES DE PERFIL (usuario solicita → admin aprueba/rechaza)
-#   Tabla: perfiles_solicitudes
+#   PESTAÑA 3 — USUARIOS (solo admin)
 # ════════════════════════════════════════════════════════════════
-def crear_solicitud_perfil(usuario_id: str, usuario_nombre: str, perfil: dict):
-    """Un usuario (no admin) solicita un perfil nuevo. Regresa (True, fila) o (False, error)."""
-    try:
-        db = get_client()
-        res = db.table("perfiles_solicitudes").insert({
-            "solicitante_id":     usuario_id,
-            "solicitante_nombre": usuario_nombre,
-            "nombre":             perfil["nombre"],
-            "regla1_activa":      perfil.get("regla1_activa", True),
-            "regla2_activa":      perfil.get("regla2_activa", True),
-            "dias_previo":        perfil.get("dias_previo", 3),
-            "dias_ferromex":      perfil.get("dias_ferromex", 3),
-            "dias_carretero":     perfil.get("dias_carretero", 2),
-            "na_previo":          perfil.get("na_previo", False),
-            "na_ffcc":            perfil.get("na_ffcc", False),
-            "na_carretero":       perfil.get("na_carretero", False),
-            "estado":             "pendiente",
-            "notificado":         False,
-        }).execute()
-        return True, (res.data[0] if res.data else {})
-    except Exception as e:
-        return False, str(e)
+# ════════════════════════════════════════════════════════════════
+#   PESTAÑA 3 — REGLAS DE APLICACIÓN
+# ════════════════════════════════════════════════════════════════
+tab_reglas_idx = 2
+with nav[tab_reglas_idx]:
+    st.markdown("<div class='sec-hdr'>📖 Reglas de Aplicación del Sistema</div>",
+                unsafe_allow_html=True)
 
+    st.markdown("""
+    <div style='background:#FFF3E0;color:#3E2723;border-left:4px solid #E65100;padding:12px 16px;
+                border-radius:6px;margin-bottom:16px;font-size:14px;'>
+    ℹ️ Esta sección es <b>informativa</b>. Describe cómo el sistema calcula las condonaciones
+    y qué datos se requieren de los archivos Excel para que el análisis sea correcto.
+    </div>
+    """, unsafe_allow_html=True)
 
-def obtener_solicitudes_perfil(estado: str = None, solicitante_id: str = None, limite: int = 50):
-    """Lista solicitudes de perfil (más recientes primero), con filtros opcionales."""
-    try:
-        db = get_client()
-        q = db.table("perfiles_solicitudes").select("*")
-        if estado:
-            q = q.eq("estado", estado)
-        if solicitante_id:
-            q = q.eq("solicitante_id", solicitante_id)
-        return q.order("fecha_creacion", desc=True).limit(limite).execute().data or []
-    except Exception:
-        return []
+    with st.expander("📁 Archivos requeridos", expanded=True):
+        st.markdown("""
+        El sistema requiere **2 archivos Excel** para realizar el análisis:
 
+        **📋 Tabulador Comercial** — Llenado por el cliente. Se usan:
+        - `CONTENEDOR` — Identificador único del contenedor
+        - `IMPORTE SIN IVA A CONDONAR` — Monto solicitado por el cliente
+        - `CLABE INTERBANCARIA` — Datos bancarios para la devolución
 
-def resolver_solicitud_perfil(solicitud: dict, aprobar: bool, admin_nombre: str,
-                               motivo_rechazo: str = ""):
-    """
-    Aprueba (crea el perfil real) o rechaza (con motivo) una solicitud.
-    Regresa (True, None) o (False, error).
-    """
-    from datetime import datetime, timezone
-    try:
-        db = get_client()
-        if aprobar:
-            ok, data = crear_perfil_db({
-                "nombre":         solicitud["nombre"],
-                "regla1_activa":  solicitud.get("regla1_activa", True),
-                "regla2_activa":  solicitud.get("regla2_activa", True),
-                "dias_previo":    solicitud.get("dias_previo", 3),
-                "dias_ferromex":  solicitud.get("dias_ferromex", 3),
-                "dias_carretero": solicitud.get("dias_carretero", 2),
-                "na_previo":      solicitud.get("na_previo", False),
-                "na_ffcc":        solicitud.get("na_ffcc", False),
-                "na_carretero":   solicitud.get("na_carretero", False),
-            })
-            if not ok:
-                return False, str(data)
-        db.table("perfiles_solicitudes").update({
-            "estado":            "aprobada" if aprobar else "rechazada",
-            "motivo_rechazo":    None if aprobar else motivo_rechazo,
-            "resuelto_por":      admin_nombre,
-            "fecha_resolucion":  datetime.now(timezone.utc).isoformat(),
-            "notificado":        False,
-        }).eq("id", solicitud["id"]).execute()
-        return True, None
-    except Exception as e:
-        return False, str(e)
+        **📊 Archivo BI** — Descargado del sistema interno. Contiene fechas, montos y servicios por contenedor.
+        Ambos archivos deben tener **exactamente los mismos contenedores**.
+        El formato del contenedor debe ser: **4 letras + 7 números** (ejemplo: MSCU1234567).
+        """)
 
+    with st.expander("📅 Regla 1 — Plazo de 30 días naturales"):
+        st.markdown("""
+        ⏱️ **¿Qué valida?**
+        La solicitud de condonación debe realizarse dentro de los **30 días naturales**
+        posteriores a la fecha de salida del contenedor.
 
-def obtener_solicitudes_perfil_sin_notificar(usuario_id: str):
-    """Solicitudes del usuario ya resueltas de las que aún no se le avisó."""
-    try:
-        db = get_client()
-        res = db.table("perfiles_solicitudes").select("*").eq(
-            "solicitante_id", usuario_id
-        ).neq("estado", "pendiente").eq("notificado", False).execute()
-        return res.data or []
-    except Exception:
-        return []
+        📌 **Datos utilizados:**
+        - `TimeOut` → Fecha real de salida del contenedor
+        - `Fecha de Solicitud NC` → Fecha ingresada por el usuario en la interfaz
 
+        ✅ **Si cumple:** Continúa el análisis normalmente.
+        ⚠️ **Si no cumple:** Se muestra alerta con los contenedores fuera de plazo.
+        El usuario decide si continúa o cancela.
 
-def marcar_solicitudes_perfil_notificadas(ids: list):
-    try:
-        if not ids:
-            return True
-        db = get_client()
-        db.table("perfiles_solicitudes").update({"notificado": True}).in_("id", ids).execute()
-        return True
-    except Exception:
-        return False
+        💡 **Este parámetro puede desactivarse en perfiles personalizados.**
+        """)
 
+    with st.expander("📅 Regla 2 — Primeros 4 días desde ingreso"):
+        st.markdown("""
+        ⏱️ **¿Qué valida?**
+        La primera programación del cliente debe realizarse dentro de los **primeros 4 días naturales**
+        desde que el contenedor ingresó a la terminal. El día de ingreso cuenta como Día 1.
+
+        📌 **Datos utilizados:**
+        - `TimeIn` → Fecha de ingreso (Día 1, sin importar la hora)
+        - `FechaSolitudPrevio` → Fecha de solicitud de previo (opcional)
+        - `Fecha de Liberacion` → Fecha de solicitud de liberación
+
+        ✅ **Basta con que UNA de las dos fechas esté dentro del plazo.**
+        Si `FechaSolitudPrevio` está vacío, solo se valida con Liberación.
+
+        💡 **Este parámetro puede desactivarse en perfiles personalizados.**
+        """)
+
+    with st.expander("🔄 Regla 3 — Posicionamiento de Previo (días hábiles Lun–Sáb)"):
+        st.markdown("""
+        ⏱️ **¿Qué calcula?**
+        La terminal tiene un máximo de **3 días hábiles** (por default) a partir del día
+        siguiente a la solicitud de previo para posicionar el contenedor.
+
+        📌 **Datos utilizados:**
+        - `FechaSolitudPrevio` → Inicio del conteo
+        - `FechaPosicionamiento` → Fecha real de posicionamiento
+        - `FechaCancelacion` → Si el Agente Aduanal canceló el previo (ver abajo)
+
+        📋 **Días que NO cuentan dentro del plazo:**
+        - Domingos siempre
+        - Festivos oficiales de México
+        - Días marcados manualmente en el calendario
+
+        ⚠️ **Si el campo está vacío**, el servicio no fue solicitado. Se registra 0 días de desfase.
+
+        🚫 **Cancelación de previo (`FechaCancelacion`):**
+        Si el Agente Aduanal cancela el servicio de previo y decide no esperar su
+        posicionamiento, el sistema lo detecta automáticamente y calcula el desfase
+        usando `FechaSolitudPrevio` + `FechaCancelacion` en lugar de
+        `FechaPosicionamiento`, de forma individual por cada contenedor. Al iniciar
+        el análisis se muestra una alerta para que esta información se valide.
+
+        🕐 **Ajuste de horario de previo (opcional):**
+        El archivo BI no trae la hora en que se programó el previo. En la pantalla
+        de Análisis, justo después de subir el Archivo BI, puedes activarlo
+        manualmente por contenedor e indicar si se programó dentro o después de la
+        ventana de asignación:
+
+        - **Previo normal:** Lunes a Viernes hasta las 16:59, Sábado hasta las 12:00.
+          El domingo no tiene ventana.
+        - **Previo PROFEPA** *(marcando la casilla correspondiente)*: Lunes a Viernes
+          hasta las 12:59. Sábado y domingo no tienen ventana.
+
+        Si se programó **dentro** de la ventana, el conteo arranca ese mismo día
+        (igual que siempre). Si se programó **después** de la ventana, o cae en un
+        día sin ventana, el conteo arranca el siguiente día que sí tiene ventana.
+
+        Si para un contenedor **no se activa** este ajuste, la Regla 3 funciona de
+        manera normal, tal como se ha manejado siempre.
+
+        💡 **El número de días puede modificarse en perfiles personalizados.**
+        """)
+
+    with st.expander("🚂 Regla 4 — Carga a Góndola FFCC (días naturales)"):
+        st.markdown("""
+        ⏱️ **¿Qué calcula?**
+        Para contenedores con **salida ferroviaria**, la terminal tiene **3 días naturales**
+        (por default) desde el día siguiente a la documentación ante FerroMex para cargar
+        el contenedor a la góndola.
+
+        📌 **Datos utilizados:**
+        - `FechaFerroMex` → Fecha de documentación ante FerroMex
+        - `Fecha Gondola` → Fecha real de carga a góndola
+
+        ⚠️ **Importante:** Esta regla usa **días naturales**. No se aplican excepciones
+        de fines de semana, festivos ni días del calendario.
+
+        Si alguno de los dos campos está vacío, el contenedor tuvo otra modalidad de salida
+        y esta regla no aplica (0 días de desfase).
+
+        💡 **El número de días puede modificarse en perfiles personalizados.**
+        """)
+
+    with st.expander("🚚 Regla 5 — Entrega Carretero (días hábiles con excepciones)"):
+        st.markdown("""
+        ⏱️ **¿Qué calcula?**
+        Para contenedores con **salida en camión**, la terminal tiene **2 días hábiles**
+        (por default) desde el día siguiente a la programación de entrega.
+
+        📌 **Datos utilizados:**
+        - `Fecha de programación de entrega` → Inicio del conteo
+        - `TimeOut` → Fecha real de entrega
+
+        📋 **Reglas especiales del sábado:**
+        - Si programó **Lunes a Miércoles** → el sábado SÍ cuenta como día hábil
+        - Si programó **Jueves o Viernes** → el sábado NO cuenta en el plazo
+
+        📋 **El domingo** nunca cuenta dentro del plazo, pero sí cuenta como día
+        de desfase si el plazo ya venció.
+
+        📋 **Festivos y días del calendario** solo se saltan si están dentro del plazo.
+        Una vez que hay desfase, todos los días cuentan.
+
+        💡 **El número de días puede modificarse en perfiles personalizados.**
+        """)
+
+    with st.expander("➕ Regla 6 — Total de Días de Desfase"):
+        st.markdown("""
+        **Fórmula:**
+        ```
+        Total Desfase = Días Regla 3 (Previo) + Días Regla 4 (FFCC) + Días Regla 5 (Carretero)
+        ```
+        Si alguna regla no aplica para un contenedor, se suma 0.
+        Este total se usa para calcular los montos a condonar en las Reglas 7, 8 y 9.
+        """)
+
+    with st.expander("💰 Regla 7 — Monto a Condonar por Almacenaje"):
+        st.markdown("""
+        📌 **Datos del BI utilizados:**
+        - `Almacenaje Qty` → Días totales de almacenaje cobrados
+        - `Almacenaje SubTotal` → Monto total cobrado por almacenaje
+
+        **Cálculo:**
+        ```
+        Costo por día = Almacenaje SubTotal ÷ Almacenaje Qty
+        Días a condonar = MIN(Total Desfase, Almacenaje Qty)
+        Monto a condonar = Costo por día × Días a condonar
+        Días a cobrar = MAX(Almacenaje Qty - Días Desfase, 0)
+        ```
+        ⚠️ Los días de desfase nunca pueden superar los días totales cobrados.
+        Si supera, se ecualiza automáticamente al máximo cobrado.
+        """)
+
+    with st.expander("❄️ Regla 8 — Monto a Condonar por Conexiones (Refrigerados)"):
+        st.markdown("""
+        Solo aplica para **contenedores refrigerados** con cobro de suministro de energía.
+        Usa los mismos días de desfase de la Regla 6.
+
+        📌 **Datos del BI utilizados:**
+        - `Suministro De Energía Qty` → Días de conexión cobrados
+        - `Suministro De Energía SubTotal` → Monto total cobrado
+
+        **Cálculo:**
+        ```
+        Costo por día = Energía SubTotal ÷ Energía Qty
+        Monto a condonar = Costo por día × MIN(Total Desfase, Energía Qty)
+        ```
+        Si los campos están vacíos o en 0, se registra **"No aplica"**.
+        """)
+
+    with st.expander("🏢 Regla 9 — Servicio de Administración y Control"):
+        st.markdown("""
+        Este servicio se condona de manera **total o nada** (sin condonaciones parciales).
+
+        ✅ **Se condona si:**
+        - Se cobró el servicio en la factura, Y
+        - Los días de desfase cubren completamente los días de almacenaje cobrados
+
+        ❌ **No se condona si:**
+        - No se cobró el servicio, O
+        - Los días de desfase son menores a los días de almacenaje totales
+
+        📌 **Dato del BI:** `Servicio de Administración y Control SubTotal`
+        """)
+
+    with st.expander("✏️ Condonación Manual Directa"):
+        st.markdown("""
+        Esta opción permite **omitir el cálculo automático** de las Reglas 3, 4 y 5
+        y colocar directamente los días a condonar por cada concepto.
+
+        📋 **¿Cuándo usarla?**
+        Cuando el cliente y la terminal acuerdan una cantidad específica de días
+        a condonar sin pasar por las reglas de negocio estándar.
+
+        📋 **¿Cómo funciona?**
+        - Se ingresan los días manualmente para Previo, Ferroviario y Carretero
+        - El total se usa igual que el resultado de la Regla 6
+        - Se aplican las mismas restricciones: no se puede condonar más días
+          de los que se cobraron en almacenaje
+        - Al menos uno de los tres campos debe ser mayor a 0
+
+        ⚠️ Las **Reglas 1 y 2** siguen validándose aunque la condonación sea manual.
+        """)
+
+    with st.expander("📆 Calendario de Días No Hábiles"):
+        st.markdown("""
+        El calendario permite marcar días que no se contarán como hábiles
+        en el cálculo de los plazos de las **Reglas 3 y 5**.
+
+        🟧 **Festivos oficiales** → Precargados automáticamente (Ley Federal del Trabajo)
+        🟨 **Días especiales** → Marcados manualmente por el usuario (cierres de aduana, etc.)
+        ⬜ **Fines de semana** → Sábados y domingos (efecto varía por regla)
+
+        ⚠️ **Importante:** La **Regla 4 (FFCC)** usa días naturales y NO respeta
+        el calendario ni festivos.
+
+        Los días marcados solo afectan el plazo si caen **dentro del período de condonación**.
+        Si el plazo ya venció y hay desfase, todos los días cuentan incluyendo los marcados.
+        """)
 
 # ════════════════════════════════════════════════════════════════
-#   DÍAS ESPECIALES GLOBALES (solo el admin los pone/quita)
-#   Tabla: dias_especiales (fecha date PK, comentario, creado_por)
+#   PESTAÑA UNIFICADA: GESTIÓN NC (con sub-pestañas)
 # ════════════════════════════════════════════════════════════════
-def obtener_dias_especiales_db():
-    """Regresa {date: comentario} con todos los días especiales guardados."""
-    from datetime import date as _date
-    try:
-        db = get_client()
-        res = db.table("dias_especiales").select("fecha, comentario").execute()
-        return {_date.fromisoformat(str(r["fecha"])[:10]): (r.get("comentario") or "")
-                for r in (res.data or [])}
-    except Exception:
-        return {}
+with nav[IDX_GESTION]:
+    st.markdown("<div class='sec-hdr'>🗂️ Gestión de Notas de Crédito</div>",
+                unsafe_allow_html=True)
+
+    _sub_labels = []
+    if es_admin:
+        _sub_labels.append("➕ Asignar NC")
+    _sub_labels += ["📌 NC Asignadas", "✅ NC Concluidas", "🗃️ NC Creadas"]
+    sub_nav = st.tabs(_sub_labels)
+
+    _si = 0
+    if es_admin:
+        with sub_nav[_si]:
+            st.markdown("<div class='admin-hdr'>🗂️ Asignar Nota de Crédito</div>",
+                        unsafe_allow_html=True)
+
+            with st.expander("➕ Crear nueva NC", expanded=False):
+                with st.form("form_nueva_nc"):
+                    nc_ext = st.text_input("Número de nota de crédito externa")
+
+                    usuarios_lista = _cached_usuarios()
+                    nombres_usr = [u["nombre_completo"] for u in usuarios_lista if u["activo"]]
+                    resp_sel = st.selectbox("Encargado responsable de la NC", nombres_usr)
+
+                    fecha_sol_nc = st.date_input("Fecha de solicitud de NC",
+                                                  value=hoy_mx(), format="DD/MM/YYYY")
+
+                    vincular = st.checkbox("🔗 Vincular a una NC raíz")
+                    nc_vinc_id = None
+                    if vincular:
+                        todas_nc = _cached_nc_asignaciones()
+                        # Solo se ofrecen como raíz las NC que no dependen ya de otra,
+                        # para mantener la jerarquía a un solo nivel (raíz -> hijas).
+                        candidatas_raiz = [n for n in todas_nc
+                                           if not n.get("vinculada_a")
+                                           and not n.get("inhabilitada")]
+                        opciones_vinc = {f"{nc['nc_externo']} — {estado_legible_nc(nc)} ({nc['id'][:8]})": nc["id"]
+                                         for nc in candidatas_raiz}
+                        busq_vinc = st.text_input("Buscar NC raíz")
+                        filtradas = {k: v for k, v in opciones_vinc.items()
+                                     if busq_vinc.upper() in k.upper()} if busq_vinc else opciones_vinc
+                        if filtradas:
+                            sel_vinc = st.selectbox("Selecciona la NC raíz", list(filtradas.keys()))
+                            nc_vinc_id = filtradas.get(sel_vinc)
+                            nc_raiz_elegida = next((n for n in candidatas_raiz if n["id"] == nc_vinc_id), None)
+                            if nc_raiz_elegida and nc_raiz_elegida.get("concluida"):
+                                st.warning("⚠️ Estado: Concluido — la NC raíz que elegiste ya está cerrada.")
+                            else:
+                                st.caption("La nueva NC quedará como hija de la NC raíz seleccionada.")
+                        else:
+                            st.caption("No hay NC disponibles para usar como raíz "
+                                       "(solo se muestran NC que no dependen ya de otra).")
 
 
-def agregar_dia_especial_db(fecha, comentario: str, creado_por: str):
-    try:
-        db = get_client()
-        db.table("dias_especiales").upsert({
-            "fecha":      fecha.isoformat(),
-            "comentario": comentario,
-            "creado_por": creado_por,
-        }).execute()
-        return True, None
-    except Exception as e:
-        return False, str(e)
+                    if st.form_submit_button("Crear NC", type="primary"):
+                        if not nc_ext or not resp_sel:
+                            st.warning("Completa todos los campos obligatorios")
+                        else:
+                            ya_existe = next(
+                                (n for n in obtener_nc_asignaciones()
+                                 if n["nc_externo"].strip().upper() == nc_ext.strip().upper()),
+                                None
+                            )
+                            if ya_existe:
+                                st.error(
+                                    f"⚠️ La NC ya existe como: **{ya_existe['nc_externo']}** — "
+                                    f"creada el {fecha_hora_mx(ya_existe.get('fecha_creacion'))}."
+                                )
+                            else:
+                                resp_obj = next((u for u in usuarios_lista
+                                                  if u["nombre_completo"] == resp_sel), None)
+                                ok, res = crear_nc_asignacion(
+                                    nc_ext, resp_obj["id"], resp_obj["nombre_completo"],
+                                    fecha_sol_nc.isoformat(), usuario["id"], nc_vinc_id
+                                )
+                                if ok:
+                                    st.success(f"NC {nc_ext} creada y asignada a {resp_sel}")
+                                    invalidar_cache_nc()
+                                    st.rerun()
+                                else:
+                                    st.error(f"Error: {res}")
 
+            # ── Asignación masiva desde Excel (ciclo entre personas en rotación) ──
+            with st.expander("📥 Asignación masiva desde Excel", expanded=False):
+                st.caption(
+                    "Excel con 3 columnas: **A** = Fecha de NC · **B** = Número de NC externo "
+                    "(formato NC-#### o NC-#####) · **C** = Persona asignada (opcional: nombre "
+                    "completo o usuario). Las filas sin persona se reparten en ciclo entre las "
+                    "personas marcadas **En rotación** (se configura en 👥 Usuarios). Si una fila "
+                    "trae persona, se le asigna a ella y cuenta como su turno: el ciclo se la "
+                    "salta la próxima vez. El ciclo continúa donde se quedó la carga anterior."
+                )
+                st.download_button("📄 Descargar machote (Excel con instrucciones)",
+                                   data=_am.plantilla_excel_bytes(_cached_usuarios()),
+                                   file_name="plantilla_asignacion_masiva.xlsx",
+                                   key="dl_plantilla_masiva")
 
-def quitar_dia_especial_db(fecha):
-    try:
-        db = get_client()
-        db.table("dias_especiales").delete().eq("fecha", fecha.isoformat()).execute()
-        return True
-    except Exception:
-        return False
+                _usrs_m = _cached_usuarios()
+                _rot_m = _am.usuarios_en_rotacion(_usrs_m)
+                _estado_m = obtener_config_app(_am.CLAVE_ESTADO, {}) or {}
+                if _rot_m:
+                    _sig_id = _estado_m.get("siguiente_id")
+                    _txt_rot = " → ".join(
+                        (f"**{u['nombre_completo']}** ⬅ sigue" if u["id"] == _sig_id
+                         else u["nombre_completo"]) for u in _rot_m)
+                    st.markdown(f"🔄 Ciclo actual ({len(_rot_m)} personas): {_txt_rot}")
+                else:
+                    st.warning("No hay personas marcadas 'En rotación'. Configúralas en 👥 Usuarios.")
 
+                with st.form("form_masivo_nc"):
+                    _arch_m = st.file_uploader("Archivo Excel (.xlsx)", type=["xlsx"],
+                                               key=f"up_masivo_{st.session_state.get('masivo_up_key', 0)}")
+                    _prev_m = st.form_submit_button("🔍 Previsualizar asignación", type="primary")
+                if _prev_m:
+                    if _arch_m is None:
+                        st.error("Sube el archivo Excel primero.")
+                    else:
+                        _filas_m, _err_m = _am.leer_excel_masivo(_arch_m)
+                        if _err_m:
+                            st.error(_err_m)
+                        else:
+                            _exist_m = {_am._norm(n["nc_externo"]) for n in obtener_nc_asignaciones()}
+                            _plan_m, _est_nuevo_m, _ = _am.planear_asignacion(
+                                _filas_m, _usrs_m, _exist_m, _estado_m)
+                            st.session_state["masivo_plan"] = _plan_m
+                            st.session_state["masivo_estado_nuevo"] = _est_nuevo_m
 
-def limpiar_dias_especiales_db():
-    try:
-        db = get_client()
-        db.table("dias_especiales").delete().neq("comentario", "__nunca__").execute()
-        return True
-    except Exception:
-        return False
+                if st.session_state.get("masivo_resultado"):
+                    _tipo_r, _msg_r = st.session_state.pop("masivo_resultado")
+                    (st.success if _tipo_r == "ok" else st.warning)(_msg_r)
 
+                _plan_m = st.session_state.get("masivo_plan")
+                if _plan_m:
+                    _ok_m  = [p for p in _plan_m if p["ok"]]
+                    _bad_m = [p for p in _plan_m if not p["ok"]]
+                    mc1, mc2 = st.columns(2)
+                    mc1.metric("✅ NC a crear", len(_ok_m))
+                    mc2.metric("❌ Filas con error (se omiten)", len(_bad_m))
+                    st.dataframe(pd.DataFrame([{
+                        "Fila Excel": p["fila"],
+                        "Fecha": p["fecha"].strftime("%d/%m/%Y") if p["fecha"] else "—",
+                        "NC": p["nc"] or "—",
+                        "Asignada a": p["persona_nombre"] or "—",
+                        "Modo": p["modo"] or "—",
+                        "Resultado": "✅ OK" if p["ok"] else f"❌ {p['motivo']}",
+                    } for p in _plan_m]), hide_index=True, width='stretch')
+                    if _ok_m:
+                        _conteo = {}
+                        for p in _ok_m:
+                            _conteo[p["persona_nombre"]] = _conteo.get(p["persona_nombre"], 0) + 1
+                        st.caption("Reparto: " + " · ".join(f"{k}: {v}" for k, v in _conteo.items()))
+                    bc1, bc2 = st.columns(2)
+                    if bc1.button(f"✅ Confirmar y crear {len(_ok_m)} NC", type="primary",
+                                  disabled=not _ok_m, key="btn_conf_masivo", width='stretch'):
+                        _exist_now = {_am._norm(n["nc_externo"]) for n in obtener_nc_asignaciones()}
+                        _creadas, _fallas, _por_persona = 0, [], {}
+                        _barra = st.progress(0.0, text="Creando NC...")
+                        for i, p in enumerate(_ok_m, 1):
+                            if _am._norm(p["nc"]) in _exist_now:
+                                _fallas.append(f"{p['nc']} (ya existía)")
+                            else:
+                                ok_c, res_c = crear_nc_asignacion(
+                                    p["nc"], p["persona_id"], p["persona_nombre"],
+                                    p["fecha"].isoformat(), usuario["id"], None,
+                                    notificar=False)
+                                if ok_c:
+                                    _creadas += 1
+                                    _exist_now.add(_am._norm(p["nc"]))
+                                    _por_persona.setdefault(p["persona_id"], []).append((res_c, p["nc"]))
+                                else:
+                                    _fallas.append(f"{p['nc']} ({res_c})")
+                            _barra.progress(i / len(_ok_m), text=f"Creando NC... {i}/{len(_ok_m)}")
+                        # Una sola notificación por persona (no una por NC)
+                        for _uid, _lst in _por_persona.items():
+                            _ncs_txt = ", ".join(n for _, n in _lst[:15]) + (" ..." if len(_lst) > 15 else "")
+                            crear_nc_notificacion(_uid, _lst[0][0],
+                                f"Se te asignaron {len(_lst)} NC nuevas: {_ncs_txt}")
+                        guardar_config_app(_am.CLAVE_ESTADO,
+                                           st.session_state.get("masivo_estado_nuevo") or {})
+                        invalidar_cache_nc()
+                        st.session_state["masivo_plan"] = None
+                        st.session_state["masivo_up_key"] = st.session_state.get("masivo_up_key", 0) + 1
+                        _msg = f"Se crearon {_creadas} NC."
+                        if _fallas:
+                            _msg += " No se pudieron crear: " + "; ".join(_fallas)
+                        st.session_state["masivo_resultado"] = ("ok" if not _fallas else "warn", _msg)
+                        st.rerun()
+                    if bc2.button("Cancelar", key="btn_cancel_masivo", width='stretch'):
+                        st.session_state["masivo_plan"] = None
+                        st.rerun()
 
+            st.markdown("### Todas las NCs asignadas")
+            busq_asig = st.text_input("🔍 Buscar por NC, contenedor o factura", key="busq_asignar")
+            todas = buscar_nc_asignaciones(busq_asig) if busq_asig.strip() else _cached_nc_asignaciones()
+
+            COLOR_VISUAL = {
+                "nuevo":        ("🔵", "#E3F2FD"),
+                "seguimiento":  ("🟢", "#E8F5E9"),
+                "reasignado":   ("🟡", "#FFFDE7"),
+            }
+
+            todas_completas = _cached_nc_asignaciones()  # sin filtro de búsqueda, para los selectores de vínculo
+
+            def _render_nc_asignada(nc):
+                vis = nc.get("estado_visual", "nuevo")
+                icono, bg = COLOR_VISUAL.get(vis, ("⚪", "#F5F5F5"))
+                inhab = " ⛔ INHABILITADA" if nc.get("inhabilitada") else ""
+                vinc_txt = ""
+                if nc.get("vinculada_a"):
+                    nc_padre = obtener_nc_por_id(nc["vinculada_a"])
+                    if nc_padre:
+                        vinc_txt = f" 🔻 más baja (depende de {nc_padre['nc_externo']})"
+                else:
+                    hijas_preview = obtener_nc_hijas(nc["id"])
+                    if hijas_preview:
+                        vinc_txt = (" 🔺 más alta — historial: " +
+                                   ", ".join(h["nc_externo"] for h in hijas_preview))
+
+                with st.expander(f"{icono} {nc['nc_externo']} — {nc['responsable_nombre']} "
+                                 f"— {nc['estatus']}{inhab}{vinc_txt}"):
+                    st.write(f"**NC Externo:** {nc['nc_externo']}")
+                    st.write(f"**NC Interno:** {nc.get('nc_interno') or '—'}")
+                    st.write(f"**Responsable actual:** {nc['responsable_nombre']}")
+                    st.write(f"**Fecha solicitud:** {nc.get('fecha_solicitud', '—')}")
+                    st.write(f"**Estatus:** {nc['estatus']}")
+                    fcr1, fcr2 = st.columns(2)
+                    fcr1.write(f"**Creada:** {fecha_hora_mx(nc.get('fecha_creacion'))}")
+                    fcr2.write(f"**Cerrada:** {fecha_hora_mx(nc.get('fecha_cierre'))}")
+                    if nc.get("cliente"):
+                        st.write(f"**Cliente:** {nc['cliente']}")
+                    if nc.get("numero_factura"):
+                        st.write(f"**Factura:** {nc['numero_factura']}")
+
+                    st.markdown("---")
+                    st.markdown("**🔗 Jerarquía / vínculo con otra NC**")
+                    if nc.get("vinculada_a"):
+                        nc_raiz_actual = obtener_nc_por_id(nc["vinculada_a"])
+                        if nc_raiz_actual:
+                            st.write(f"🔻 Esta NC es **más baja** en la jerarquía — "
+                                    f"depende de: **{nc_raiz_actual['nc_externo']}**")
+                            st.write(f"Estado de esa NC: **{estado_legible_nc(nc_raiz_actual)}**")
+                            if nc_raiz_actual.get("concluida"):
+                                st.warning("⚠️ La NC de la que depende ya está concluida.")
+                            hermanas = [h for h in obtener_nc_hijas(nc["vinculada_a"])
+                                       if h["id"] != nc["id"]]
+                            if hermanas:
+                                st.caption("Otras NC en el mismo historial: " +
+                                          ", ".join(h["nc_externo"] for h in hermanas))
+                            if st.button("🔓 Quitar vínculo", key=f"desvinc_{nc['id']}"):
+                                desvincular_nc(nc["id"])
+                                st.success("Vínculo eliminado")
+                                invalidar_cache_nc()
+                                st.rerun()
+                        else:
+                            st.caption("—")
+                    else:
+                        hijas_actuales = obtener_nc_hijas(nc["id"])
+                        if hijas_actuales:
+                            st.write("🔺 Esta NC es la **más alta** en la jerarquía — historial debajo: " +
+                                    ", ".join(h["nc_externo"] for h in hijas_actuales))
+                            st.caption("Para cambiar esta jerarquía, primero quita el vínculo "
+                                      "de cada NC del historial.")
+                        else:
+                            candidatas_vinc = [n for n in todas_completas
+                                               if n["id"] != nc["id"]
+                                               and not n.get("vinculada_a")
+                                               and not n.get("inhabilitada")]
+                            if candidatas_vinc:
+                                opciones_v2 = {f"{c['nc_externo']} — {estado_legible_nc(c)} ({c['id'][:8]})": c["id"]
+                                              for c in candidatas_vinc}
+                                sel_v2 = st.selectbox(
+                                    "Vincular esta NC a otra (quedará como más baja / dependiente)",
+                                    ["— Sin vínculo —"] + list(opciones_v2.keys()),
+                                    key=f"selvinc_{nc['id']}"
+                                )
+                                if sel_v2 != "— Sin vínculo —":
+                                    raiz_elegida_v2 = next((c for c in candidatas_vinc
+                                                            if c["id"] == opciones_v2[sel_v2]), None)
+                                    if raiz_elegida_v2 and raiz_elegida_v2.get("concluida"):
+                                        st.warning("⚠️ Estado: Concluido — esa NC ya está cerrada.")
+                                    if st.button("🔗 Confirmar vínculo", key=f"btnvinc_{nc['id']}"):
+                                        ok_v, err_v = vincular_nc_existente(nc["id"], opciones_v2[sel_v2])
+                                        if ok_v:
+                                            st.success("NC vinculada correctamente")
+                                            invalidar_cache_nc()
+                                            st.rerun()
+                                        else:
+                                            st.error(err_v or "No se pudo vincular")
+                            else:
+                                st.caption("No hay otras NC disponibles para vincular.")
+
+                    st.markdown("---")
+                    st.markdown("**🔀 Fusionar con una NC anterior (historial / duplicado)**")
+                    st.caption(
+                        "Úsalo cuando esta NC es continuación de otra que ya se cerró/rechazó, "
+                        "o cuando son 2 registros de la misma solicitud repartidos entre 2 "
+                        "personas. Esta NC (la que estás viendo) se queda como la **más alta** "
+                        "(activa) y sigue dando seguimiento; la que elijas abajo pasa a ser "
+                        "**más baja** (historial) y se inhabilita, pero no se borra."
+                    )
+                    candidatas_fusion = [n for n in todas_completas
+                                         if n["id"] != nc["id"] and not n.get("inhabilitada")]
+                    if candidatas_fusion:
+                        opciones_f = {f"{c['nc_externo']} — {estado_legible_nc(c)} — "
+                                     f"{c['responsable_nombre']} ({c['id'][:8]})": c["id"]
+                                     for c in candidatas_fusion}
+                        sel_f = st.selectbox("Esta NC es continuación/duplicada de:",
+                                             ["— Ninguna —"] + list(opciones_f.keys()),
+                                             key=f"selfusion_{nc['id']}")
+                        if sel_f != "— Ninguna —":
+                            if st.button("🔀 Confirmar fusión", key=f"btnfusion_{nc['id']}"):
+                                ok_f, err_f = fusionar_nc(nc["id"], opciones_f[sel_f])
+                                if ok_f:
+                                    st.success("NC fusionadas correctamente")
+                                    invalidar_cache_nc()
+                                    st.rerun()
+                                else:
+                                    st.error(err_f or "No se pudo fusionar")
+                    else:
+                        st.caption("No hay otras NC disponibles para fusionar.")
+
+                    ra1, ra2 = st.columns(2)
+                    with ra1:
+                        nuevos_resp = [u["nombre_completo"] for u in usuarios_lista if u["activo"]]
+                        idx_actual = (nuevos_resp.index(nc["responsable_nombre"])
+                                      if nc["responsable_nombre"] in nuevos_resp else 0)
+                        nuevo_resp_sel = st.selectbox(
+                            "Reasignar a:", nuevos_resp, index=idx_actual,
+                            key=f"reasig_{nc['id']}"
+                        )
+                        if nuevo_resp_sel != nc["responsable_nombre"]:
+                            if st.button("Confirmar reasignación", key=f"btn_reasig_{nc['id']}"):
+                                nuevo_obj = next((u for u in usuarios_lista
+                                                  if u["nombre_completo"] == nuevo_resp_sel), None)
+                                reasignar_nc(nc["id"], nuevo_obj["id"], nuevo_obj["nombre_completo"])
+                                st.success("Reasignado correctamente")
+                                invalidar_cache_nc()
+                                st.rerun()
+                    with ra2:
+                        if not nc.get("inhabilitada"):
+                            with st.popover("⛔ Inhabilitar NC"):
+                                motivo_inhab = st.text_area("Motivo", key=f"motinhab_{nc['id']}")
+                                if st.button("Confirmar inhabilitar", key=f"btninhab_{nc['id']}"):
+                                    if motivo_inhab.strip():
+                                        inhabilitar_nc(nc["id"], motivo_inhab.strip())
+                                        st.success("NC inhabilitada")
+                                        invalidar_cache_nc()
+                                        st.rerun()
+                                    else:
+                                        st.warning("Escribe un motivo")
+
+                    with st.popover("🗑️ Eliminar NC"):
+                        st.warning(
+                            "Esta acción es permanente: la NC desaparece de todas "
+                            "las sub-pestañas de Gestión NC (Asignar NC, NC Asignadas, "
+                            "NC Concluidas, NC Creadas) y no se puede deshacer. "
+                            "Si solo quieres dejar de trabajarla, usa mejor "
+                            "'Inhabilitar NC'."
+                        )
+                        if not st.session_state.get(f"confirmar_elim_{nc['id']}"):
+                            if st.button("Eliminar de forma permanente",
+                                        key=f"pedirelim_{nc['id']}"):
+                                st.session_state[f"confirmar_elim_{nc['id']}"] = True
+                                st.rerun()
+                        else:
+                            st.error(f"¿Seguro que quieres eliminar **{nc['nc_externo']}** "
+                                    f"de forma permanente?")
+                            ce1, ce2 = st.columns(2)
+                            with ce1:
+                                if st.button("Sí, eliminar", key=f"confelim_si_{nc['id']}"):
+                                    eliminar_nc_asignacion(nc["id"])
+                                    del st.session_state[f"confirmar_elim_{nc['id']}"]
+                                    invalidar_cache_nc()
+                                    st.success("NC eliminada")
+                                    st.rerun()
+                            with ce2:
+                                if st.button("No", key=f"confelim_no_{nc['id']}"):
+                                    del st.session_state[f"confirmar_elim_{nc['id']}"]
+                                    st.rerun()
+
+            # ── Separar por estado en pestañas ────────────────────────
+            def _es_rechazada(n):
+                return "RECHAZ" in str(n.get("estatus") or "").upper()
+
+            def _es_pendiente(n):
+                return "PENDIENTE" in str(n.get("estatus") or "").upper()
+
+            grp_rech  = [n for n in todas if n.get("inhabilitada") or _es_rechazada(n)]
+            _resto    = [n for n in todas if n not in grp_rech]
+            grp_concl = [n for n in _resto if n.get("concluida")]
+            grp_pend  = [n for n in _resto if not n.get("concluida") and _es_pendiente(n)]
+            grp_asig  = [n for n in _resto if not n.get("concluida") and not _es_pendiente(n)]
+
+            _grupos = [
+                (f"🔵 NC Pendientes ({len(grp_pend)})", grp_pend,
+                 "Sin NC pendientes de revisar."),
+                (f"🟢 NC Asignadas / en proceso ({len(grp_asig)})", grp_asig,
+                 "Sin NC en proceso."),
+                (f"✅ NC Concluidas ({len(grp_concl)})", grp_concl,
+                 "Sin NC concluidas."),
+                (f"⛔ NC Rechazadas / Inhabilitadas ({len(grp_rech)})", grp_rech,
+                 "Sin NC rechazadas ni inhabilitadas."),
+            ]
+            _tabs_estado = st.tabs([g[0] for g in _grupos])
+            for _tab, (_lbl, _lista, _vacio) in zip(_tabs_estado, _grupos):
+                with _tab:
+                    if not _lista:
+                        st.caption(_vacio)
+                    for _nc_item in _lista:
+                        _render_nc_asignada(_nc_item)
+        _si += 1
+
+    with sub_nav[_si]:
+        st.markdown("<div class='sec-hdr'>📌 NC Asignadas</div>", unsafe_allow_html=True)
+
+        if es_admin:
+            lista_nc = [n for n in _cached_nc_asignaciones()
+                       if not n.get("concluida") and not n.get("inhabilitada")]
+        else:
+            lista_nc = [n for n in obtener_nc_asignaciones(responsable_id=usuario["id"])
+                        if not n.get("concluida") and not n.get("inhabilitada")]
+
+        motivos_disp = [m["texto"] for m in _cached_nc_motivos()]
+        estatus_disp = [e["texto"] for e in _cached_nc_estatus()]
+        estatus_concluido_set = {e["texto"] for e in _cached_nc_estatus() if e.get("es_concluido")}
+
+        if not lista_nc:
+            st.info("No tienes NCs asignadas pendientes.")
+
+        for nc in lista_nc:
+            vis = nc.get("estado_visual", "nuevo")
+            icono = {"nuevo": "🔵", "seguimiento": "🟢", "reasignado": "🟡"}.get(vis, "⚪")
+
+            with st.expander(f"{icono} {nc['nc_externo']} — {nc['estatus']}",
+                             expanded=False):
+                st.markdown("**Información fija (no editable):**")
+                fi1, fi2, fi3 = st.columns(3)
+                fi1.text_input("Creada", value=fecha_hora_mx(nc.get("fecha_creacion")),
+                               disabled=True, key=f"ffija1_{nc['id']}")
+                fi2.text_input("NC Externo", value=nc["nc_externo"], disabled=True,
+                               key=f"ffija2_{nc['id']}")
+                fi3.text_input("Responsable", value=nc["responsable_nombre"], disabled=True,
+                               key=f"ffija3_{nc['id']}")
+                st.text_input("Cerrada", value=fecha_hora_mx(nc.get("fecha_cierre")),
+                             disabled=True, key=f"ffijacierre_{nc['id']}")
+
+                if nc.get("cliente") or nc.get("numero_factura"):
+                    st.caption(f"Cliente: {nc.get('cliente','—')}  |  "
+                              f"Factura: {nc.get('numero_factura','—')}")
+
+                st.markdown("---")
+                st.markdown("**Información a completar:**")
+
+                nc_int = st.text_input("NC Interno", value=nc.get("nc_interno") or "",
+                                       key=f"ncint_{nc['id']}")
+
+                idx_mot = (motivos_disp.index(nc["motivo"])
+                           if nc.get("motivo") in motivos_disp else 0) if motivos_disp else 0
+                motivo_sel = st.selectbox("Motivo de la solicitud de NC",
+                                          motivos_disp if motivos_disp else ["—"],
+                                          index=idx_mot, key=f"motivo_{nc['id']}")
+
+                idx_est = (estatus_disp.index(nc["estatus"])
+                           if nc.get("estatus") in estatus_disp else 0) if estatus_disp else 0
+                estatus_sel = st.selectbox("Estatus de la NC",
+                                           estatus_disp if estatus_disp else ["—"],
+                                           index=idx_est, key=f"estatus_{nc['id']}")
+
+                nc_emitida = ""
+                if estatus_sel == "NOTA DE CREDITO EMITIDA":
+                    nc_emitida = st.text_input("Número de NC emitida",
+                                               value=nc.get("numero_nc_emitida") or "",
+                                               key=f"ncemit_{nc['id']}")
+
+                st.markdown("**Contenedores** (pega el texto, se detectan automáticamente)")
+                conts_texto = st.text_area("Pegar contenedores",
+                                           value=nc.get("contenedores") or "",
+                                           key=f"contstxt_{nc['id']}", height=80)
+                conts_extraidos = extraer_contenedores(conts_texto) if conts_texto else \
+                                  (nc.get("contenedores") or "").split(",")
+                conts_extraidos = [c.strip() for c in conts_extraidos if c.strip()]
+
+                if conts_extraidos:
+                    st.caption(f"{len(conts_extraidos)} contenedor(es) detectado(s)")
+                    st.dataframe(pd.DataFrame({"Contenedor": conts_extraidos}),
+                                width='stretch', hide_index=True, height=150)
+
+                comentarios_nc = st.text_area("Comentarios de la NC",
+                                              value=nc.get("comentarios") or "",
+                                              key=f"coment_{nc['id']}")
+
+                # "Rechazada" concluye la NC, pero se confirma antes de hacerlo
+                requiere_confirmacion_rechazo = "RECHAZ" in estatus_sel.upper()
+
+                def _debe_concluir():
+                    """Regla única: cuándo una NC debe quedar concluida, sin importar
+                    por cuál de los 3 caminos de guardado se llegue (normal, tras
+                    confirmar 'Rechazada', o tras revisar un duplicado)."""
+                    if "RECHAZ" in estatus_sel.upper():
+                        return True
+                    if estatus_sel in estatus_concluido_set and bool(nc_emitida):
+                        return True
+                    return False
+
+                def _datos_guardar_nc(marcar_concluida=False):
+                    datos = {
+                        "nc_interno":   nc_int,
+                        "motivo":       motivo_sel,
+                        "estatus":      estatus_sel,
+                        "contenedores": ", ".join(conts_extraidos),
+                        "comentarios":  comentarios_nc,
+                    }
+                    # Marcar como "en seguimiento" (verde) al guardar,
+                    # solo si sigue en su estado inicial "nuevo"
+                    if nc.get("estado_visual") == "nuevo":
+                        datos["estado_visual"] = "seguimiento"
+                    if nc_emitida:
+                        datos["numero_nc_emitida"] = nc_emitida
+                    if marcar_concluida:
+                        datos["concluida"] = True
+                    return datos
+
+                if st.button("💾 Guardar información", type="primary",
+                            key=f"guardar_nc_{nc['id']}"):
+                    # Verificar duplicados de contenedores contra otras NC
+                    dups = verificar_contenedores_en_nc(conts_extraidos, excluir_nc_id=nc["id"])
+                    if dups:
+                        st.session_state[f"dups_pendientes_{nc['id']}"] = dups
+                        # Avisar también al responsable de la NC ya existente,
+                        # no solo mostrarle la alerta a quien está capturando ahora
+                        for dup in dups:
+                            if dup.get("responsable_id") and dup["responsable_id"] != usuario["id"]:
+                                crear_nc_notificacion(
+                                    dup["responsable_id"], dup["nc_id"],
+                                    f"Posible duplicidad: el contenedor {dup['contenedor']} "
+                                    f"también se capturó en la NC {nc['nc_externo']} "
+                                    f"(responsable: {usuario['nombre_completo']})."
+                                )
+                        st.rerun()
+                    elif requiere_confirmacion_rechazo:
+                        st.session_state[f"confirmar_concluir_{nc['id']}"] = True
+                        st.rerun()
+                    else:
+                        marcar_conc = _debe_concluir()
+                        actualizar_nc_asignacion(nc["id"], _datos_guardar_nc(marcar_conc))
+                        invalidar_cache_nc()
+                        st.success("Información guardada")
+                        st.rerun()
+
+                # Confirmación antes de concluir por estatus "Rechazada"
+                if st.session_state.get(f"confirmar_concluir_{nc['id']}"):
+                    st.warning(
+                        f"Estás a punto de concluir la NC **{nc['nc_externo']}** con "
+                        f"estatus **{estatus_sel}**. ¿Deseas continuar?"
+                    )
+                    cf1, cf2 = st.columns(2)
+                    with cf1:
+                        if st.button("Sí, concluir", type="primary",
+                                    key=f"confconc_si_{nc['id']}"):
+                            actualizar_nc_asignacion(nc["id"], _datos_guardar_nc(marcar_concluida=True))
+                            del st.session_state[f"confirmar_concluir_{nc['id']}"]
+                            invalidar_cache_nc()
+                            st.success("NC concluida")
+                            st.rerun()
+                    with cf2:
+                        if st.button("No, seguir editando",
+                                    key=f"confconc_no_{nc['id']}"):
+                            del st.session_state[f"confirmar_concluir_{nc['id']}"]
+                            st.rerun()
+
+                # Mostrar alertas de duplicados pendientes de decisión
+                if st.session_state.get(f"dups_pendientes_{nc['id']}"):
+                    dups = st.session_state[f"dups_pendientes_{nc['id']}"]
+                    for dup in dups:
+                        if not dup["concluida"]:
+                            st.warning(
+                                f"⚠️ El contenedor **{dup['contenedor']}** ya se encuentra en "
+                                f"la solicitud **{dup['nc_externo']}**, vigente y asignada a "
+                                f"**{dup['responsable_nombre']}**. Favor validar si no hay "
+                                f"duplicidad. ¿Solicitud duplicada?"
+                            )
+                        else:
+                            st.warning(
+                                f"⚠️ Los contenedores de la solicitud ya se encuentran en una "
+                                f"NC **finalizada**: **{dup['nc_externo']}**. "
+                                f"¿Solicitud duplicada?"
+                            )
+                        dd1, dd2 = st.columns(2)
+                        with dd1:
+                            if st.button(f"Sí, es duplicada de {dup['nc_externo']}",
+                                        key=f"dupsi_{nc['id']}_{dup['nc_id']}_{dup['contenedor']}"):
+                                inhabilitar_nc(nc["id"],
+                                    f"Solicitud duplicada con la {dup['nc_externo']}")
+                                del st.session_state[f"dups_pendientes_{nc['id']}"]
+                                st.success("NC marcada como duplicada e inhabilitada")
+                                invalidar_cache_nc()
+                                st.rerun()
+                        with dd2:
+                            if st.button("No, continuar normalmente",
+                                        key=f"dupno_{nc['id']}_{dup['nc_id']}_{dup['contenedor']}"):
+                                registrar_duplicado_revisado(
+                                    nc["id"], dup["contenedor"], usuario["nombre_completo"]
+                                )
+                                marcar_conc2 = _debe_concluir()
+                                actualizar_nc_asignacion(nc["id"], _datos_guardar_nc(marcar_conc2))
+                                del st.session_state[f"dups_pendientes_{nc['id']}"]
+                                st.success("🔍 Revisado — información guardada")
+                                invalidar_cache_nc()
+                                st.rerun()
+    _si += 1
+
+    with sub_nav[_si]:
+        st.markdown("<div class='sec-hdr'>✅ NC Concluidas</div>", unsafe_allow_html=True)
+
+        concluidas = [n for n in _cached_nc_asignaciones() if n.get("concluida")]
+        if not es_admin:
+            concluidas = [n for n in concluidas if n["responsable_id"] == usuario["id"]]
+
+        inhabilitadas = [n for n in _cached_nc_asignaciones()
+                         if n.get("inhabilitada") and not n.get("concluida")]
+        if not es_admin:
+            inhabilitadas = [n for n in inhabilitadas if n["responsable_id"] == usuario["id"]]
+
+        if not concluidas and not inhabilitadas:
+            st.info("No hay NCs concluidas.")
+
+        for nc in concluidas:
+            with st.expander(f"✅ {nc['nc_externo']} — {nc.get('numero_nc_emitida','—')} "
+                             f"— {nc['responsable_nombre']}"):
+                st.write(f"**NC Externo:** {nc['nc_externo']}")
+                st.write(f"**NC Interno:** {nc.get('nc_interno') or '—'}")
+                st.write(f"**NC Emitida:** {nc.get('numero_nc_emitida') or '—'}")
+                st.write(f"**Responsable:** {nc['responsable_nombre']}")
+                st.write(f"**Motivo:** {nc.get('motivo') or '—'}")
+                st.write(f"**Estatus:** {nc['estatus']}")
+                fcc1, fcc2 = st.columns(2)
+                fcc1.write(f"**Creada:** {fecha_hora_mx(nc.get('fecha_creacion'))}")
+                fcc2.write(f"**Cerrada:** {fecha_hora_mx(nc.get('fecha_cierre'))}")
+                if nc.get("comentarios"):
+                    st.write(f"**Comentarios:** {nc['comentarios']}")
+                if nc.get("contenedores"):
+                    conts_c = [c.strip() for c in nc["contenedores"].split(",") if c.strip()]
+                    st.dataframe(pd.DataFrame({"Contenedor": conts_c}),
+                                width='stretch', hide_index=True)
+
+                if es_admin:
+                    if st.button("↩️ Reabrir y regresar a NC Asignadas",
+                                key=f"reabrir_{nc['id']}"):
+                        reabrir_nc(nc["id"])
+                        st.success("NC reabierta")
+                        invalidar_cache_nc()
+                        st.rerun()
+
+        if inhabilitadas:
+            st.markdown("---")
+            st.markdown("**⛔ Inhabilitadas** (duplicados o fusionadas — ya no requieren acción)")
+            for nc in inhabilitadas:
+                with st.expander(f"⛔ {nc['nc_externo']} — {nc['responsable_nombre']}"):
+                    st.write(f"**NC Externo:** {nc['nc_externo']}")
+                    st.write(f"**Responsable:** {nc['responsable_nombre']}")
+                    st.write(f"**Motivo de inhabilitación:** {nc.get('motivo_inhabilitacion') or '—'}")
+                    st.write(f"**Creada:** {fecha_hora_mx(nc.get('fecha_creacion'))}")
+                    if nc.get("vinculada_a"):
+                        nc_raiz_i = obtener_nc_por_id(nc["vinculada_a"])
+                        if nc_raiz_i:
+                            st.caption(f"Historial de la NC {nc_raiz_i['nc_externo']} "
+                                      f"(esta quedó como más baja en la jerarquía).")
+                    st.caption("Para reactivarla, ve a Asignar NC y quita la inhabilitación.")
+    _si += 1
+
+    with sub_nav[_si]:
+        st.markdown("<div class='sec-hdr'>🗃️ NC Creadas</div>", unsafe_allow_html=True)
+        st.caption("Vista de solo lectura — consulta el estatus de cualquier NC en el sistema.")
+
+        busq_creadas = st.text_input("🔍 Buscar por NC, contenedor o factura", key="busq_creadas")
+        todas_creadas = (buscar_nc_asignaciones(busq_creadas)
+                         if busq_creadas.strip() else _cached_nc_asignaciones())
+
+        if todas_creadas:
+            tabla_creadas = []
+            for nc in todas_creadas:
+                vinculo_txt = "—"
+                if nc.get("vinculada_a"):
+                    nc_raiz_c = obtener_nc_por_id(nc["vinculada_a"])
+                    if nc_raiz_c:
+                        vinculo_txt = f"Más baja — depende de {nc_raiz_c['nc_externo']}"
+                else:
+                    hijas_c = obtener_nc_hijas(nc["id"])
+                    if hijas_c:
+                        vinculo_txt = "Más alta — historial: " + ", ".join(h["nc_externo"] for h in hijas_c)
+
+                if nc.get("numero_nc_emitida"):
+                    nc_emitida_txt = nc["numero_nc_emitida"]
+                elif "RECHAZ" in (nc.get("estatus") or "").upper():
+                    nc_emitida_txt = "Rechazada"
+                else:
+                    nc_emitida_txt = "Pendiente"
+
+                tabla_creadas.append({
+                    "NC Externo":   nc["nc_externo"],
+                    "Creada":       fecha_hora_mx(nc.get("fecha_creacion")),
+                    "Cerrada":      fecha_hora_mx(nc.get("fecha_cierre")),
+                    "NC Interno":   nc.get("nc_interno") or "—",
+                    "Contenedores": nc.get("contenedores") or "—",
+                    "Estatus":      nc["estatus"],
+                    "NC Emitida":   nc_emitida_txt,
+                    "Comentarios":  nc.get("comentarios") or "—",
+                    "Responsable":  nc["responsable_nombre"],
+                    "Vínculo":      vinculo_txt,
+                })
+            st.dataframe(
+                pd.DataFrame(tabla_creadas), width='stretch', hide_index=True,
+                column_config={
+                    "Creada":       st.column_config.TextColumn(width="medium"),
+                    "Cerrada":      st.column_config.TextColumn(width="medium"),
+                    "Comentarios":  st.column_config.TextColumn(width="large"),
+                    "Contenedores": st.column_config.TextColumn(width="large"),
+                }
+            )
+        else:
+            st.info("No se encontraron NCs.")
 
 # ════════════════════════════════════════════════════════════════
-#   ROTACIÓN PARA ASIGNACIÓN MASIVA DE NC
-#   usuarios.en_rotacion / usuarios.orden_rotacion  +  tabla configuracion_app
+#   PESTAÑA — TRANSFERENCIAS
 # ════════════════════════════════════════════════════════════════
-def actualizar_rotacion_usuario(usuario_id: str, en_rotacion: bool, orden):
-    try:
-        db = get_client()
-        db.table("usuarios").update({
-            "en_rotacion":    bool(en_rotacion),
-            "orden_rotacion": int(orden) if orden not in (None, "") else None,
-        }).eq("id", usuario_id).execute()
-        return True, None
-    except Exception as e:
-        return False, str(e)
+with nav[IDX_TRANSFEREN]:
+    st.markdown("<div class='sec-hdr'>🔀 Módulo de Transferencias</div>",
+                unsafe_allow_html=True)
 
+    sub_nav_t = st.tabs(["📤 Generar Transferencia", "📋 Casos Registrados"])
 
-def obtener_config_app(clave: str, defecto=None):
-    try:
-        db = get_client()
-        res = db.table("configuracion_app").select("valor").eq("clave", clave).execute()
-        if res.data:
-            return res.data[0]["valor"]
-        return defecto
-    except Exception:
-        return defecto
+    # ── Sub-pestaña: Generar Transferencia ───────────────────────
+    # Todo se agrupa en un st.form para que Streamlit NO recargue la
+    # página (efecto gris de "cargando") mientras se suben los archivos —
+    # solo se recarga una vez, al darle clic a "Procesar". Por eso el
+    # botón ya no se puede deshabilitar dinámicamente: si falta algo, se
+    # avisa con un mensaje de error después de darle clic.
+    # Folio y Responsable ya NO se capturan a mano: el folio se genera
+    # solo (incremental y único) y el responsable se toma del usuario que
+    # tiene la sesión iniciada.
+    with sub_nav_t[0]:
+        st.caption(f"👤 Responsable: **{usuario['nombre_completo']}** "
+                   f"(se toma automáticamente de tu sesión).")
+        with st.form("form_generar_transferencia", clear_on_submit=False):
+            st.markdown("<div class='sec-hdr'>Archivos de Entrada</div>", unsafe_allow_html=True)
+            ukr = st.session_state["trans_uploader_key_rec"]
+            ukn = st.session_state["trans_uploader_key_n4"]
+            fc1, fc2 = st.columns(2)
+            with fc1:
+                f_recinto = st.file_uploader("📄 Archivo Recinto", type=["xlsx"],
+                                              key=f"trans_recinto_{ukr}")
+                st.caption(
+                    "Debe tener estas columnas (el nombre puede variar un poco): "
+                    "**CATEGORIA**, **CONTENEDOR**, **RECINTO ORIGEN**, **RECINTO DESTINO** "
+                    "(obligatorias) y **LINEA NAVIERA** (opcional)."
+                )
+            with fc2:
+                f_n4 = st.file_uploader("📄 Archivo Sistema N4", type=["xlsx"],
+                                         key=f"trans_n4_{ukn}")
+                st.caption(
+                    "Debe tener estas columnas (el nombre puede variar un poco): "
+                    "**Unit Nbr**, **Line Op**, **Type Arch ISO** (obligatorias) y "
+                    "**T-State**, **O/B Dclrd Mode**, **Stop-Vsl**, **Stop-Road** "
+                    "(opcionales). Los encabezados deben estar en la fila 5 del Excel."
+                )
 
+            st.caption("Sube ambos archivos y dale clic a Procesar. "
+                       "Si falta alguno, te lo indicamos aquí mismo.")
+            submitted_t = st.form_submit_button("⚙️ Procesar", type="primary")
 
-def guardar_config_app(clave: str, valor):
-    from datetime import datetime, timezone
-    try:
-        db = get_client()
-        db.table("configuracion_app").upsert({
-            "clave": clave, "valor": valor,
-            "fecha_actualizacion": datetime.now(timezone.utc).isoformat(),
-        }).execute()
-        return True, None
-    except Exception as e:
-        return False, str(e)
+        if submitted_t:
+            if f_recinto is None or f_n4 is None:
+                st.error("Sube ambos archivos (Archivo Recinto y Archivo Sistema N4) antes de procesar.")
+            else:
+                _lectura_ok = True
+                try:
+                    # Aquí, y solo aquí, se leen los 2 archivos Excel.
+                    st.session_state["trans_df_recinto"] = pd.read_excel(f_recinto)
+                    st.session_state["trans_df_n4"] = pd.read_excel(
+                        f_n4, header=N4_FILA_ENCABEZADO)
+                except Exception as e:
+                    st.error(f"No se pudo leer alguno de los archivos: {e}")
+                    _lectura_ok = False
+
+                if _lectura_ok:
+                    catalogo_r = obtener_transferencias_recintos()
+                    catalogo_n = obtener_transferencias_navieras()
+                    st.session_state["trans_resultado"] = procesar_transferencias(
+                        st.session_state["trans_df_recinto"], st.session_state["trans_df_n4"],
+                        catalogo_r, catalogo_n,
+                        overrides_recinto=st.session_state["trans_overrides"],
+                    )
+                    st.session_state["trans_reporte_bytes"] = None
+                    st.session_state["trans_guardado"] = False
+                    st.rerun()
+
+        resultado_t = st.session_state["trans_resultado"]
+        if resultado_t:
+            if resultado_t["error_bloqueante"]:
+                st.error(resultado_t["error_bloqueante"])
+                st.caption("Corrige el archivo que corresponda y vuelve a subirlo arriba antes de procesar de nuevo.")
+
+            elif resultado_t["recintos_no_reconocidos"]:
+                for a in resultado_t["alertas"]:
+                    st.warning(a)
+                st.markdown("<div class='sec-hdr'>🏷️ Recintos no reconocidos</div>",
+                            unsafe_allow_html=True)
+                st.info("Relaciona cada nombre con un código ya existente para continuar. "
+                        "La fila se procesa de inmediato; el nombre queda pendiente de "
+                        "aprobación por un Admin.")
+                st.caption("⚠️ Si alguno de estos nombres es un error de captura o una prueba "
+                           "(no es un recinto real), no lo relaciones con un código — mejor "
+                           "corrige el Archivo Recinto y vuelve a subirlo con el botón de abajo.")
+                catalogo_r_sel = obtener_transferencias_recintos()
+                codigos_unicos = sorted({r["codigo"] for r in catalogo_r_sel})
+
+                with st.expander("📖 Ver catálogo actual de Recintos (código → nombres ya registrados)",
+                                  expanded=True):
+                    st.caption("Úsalo como referencia si un nombre viene escrito de forma poco "
+                               "común, para saber a qué código relacionarlo.")
+                    por_codigo_r = {}
+                    for r in catalogo_r_sel:
+                        etiqueta = r["nombre"] + ("" if r.get("aprobado") else " (pendiente)")
+                        por_codigo_r.setdefault(r["codigo"], []).append(etiqueta)
+                    df_catalogo_r = pd.DataFrame([
+                        {"Código": cod, "Nombres registrados": ", ".join(sorted(nombres))}
+                        for cod, nombres in sorted(por_codigo_r.items())
+                    ])
+                    st.dataframe(df_catalogo_r, width='stretch', hide_index=True, height=250)
+
+                for nombre_nr in resultado_t["recintos_no_reconocidos"]:
+                    rc1, rc2 = st.columns([3, 2])
+                    with rc1:
+                        st.write(f"**{nombre_nr}**")
+                    with rc2:
+                        st.selectbox("Código", codigos_unicos,
+                                     key=f"trans_recinto_sel_{nombre_nr}",
+                                     label_visibility="collapsed")
+
+                bc1, bc2 = st.columns(2)
+                with bc1:
+                    guardar_rel = st.button("💾 Guardar relaciones y reprocesar",
+                                             key="trans_btn_guardar_rel", type="primary")
+                with bc2:
+                    corregir_arch = st.button("🔙 Corregir archivo (cancelar y volver a subir)",
+                                               key="trans_btn_corregir_recinto")
+
+                if guardar_rel:
+                    for nombre_nr in resultado_t["recintos_no_reconocidos"]:
+                        cod_sel = st.session_state.get(f"trans_recinto_sel_{nombre_nr}")
+                        if cod_sel is None:
+                            continue
+                        st.session_state["trans_overrides"][normalizar_texto_transferencias(nombre_nr)] = cod_sel
+                        ok_prop, prop_id = proponer_transferencias_recinto(
+                            cod_sel, nombre_nr, usuario["id"], usuario["nombre_completo"])
+                        if ok_prop:
+                            for u in _cached_usuarios():
+                                if u["rol"] == "admin" and u["activo"]:
+                                    crear_transferencias_notificacion(
+                                        u["id"], prop_id,
+                                        f"Nuevo nombre de recinto propuesto: '{nombre_nr}' → "
+                                        f"código {cod_sel} (por {usuario['nombre_completo']})."
+                                    )
+                    invalidar_cache_transferencias()
+                    catalogo_r2 = obtener_transferencias_recintos()
+                    catalogo_n2 = obtener_transferencias_navieras()
+                    st.session_state["trans_resultado"] = procesar_transferencias(
+                        st.session_state["trans_df_recinto"], st.session_state["trans_df_n4"],
+                        catalogo_r2, catalogo_n2,
+                        overrides_recinto=st.session_state["trans_overrides"],
+                    )
+                    st.rerun()
+
+                if corregir_arch:
+                    # Cancela este caso sin relacionar ningún nombre y regresa a la
+                    # pantalla de subida, para corregir el archivo de origen.
+                    st.session_state["trans_df_recinto"]    = None
+                    st.session_state["trans_df_n4"]         = None
+                    st.session_state["trans_resultado"]     = None
+                    st.session_state["trans_overrides"]     = {}
+                    st.session_state["trans_reporte_bytes"] = None
+                    st.session_state["trans_guardado"]      = False
+                    st.session_state["trans_uploader_key_rec"] += 1
+                    st.session_state["trans_uploader_key_n4"]  += 1
+                    st.rerun()
+
+            else:
+                for a in resultado_t["alertas"]:
+                    st.warning(a)
+
+                filas_t = resultado_t["filas"]
+                st.success(f"✔ Listo — {len(filas_t)} contenedor(es) procesado(s).")
+                df_prev_t = pd.DataFrame(filas_t)[[
+                    "contenedor", "id_solicitante", "linea_op_texto", "type_arch_iso",
+                    "recinto_origen_codigo", "recinto_destino_codigo",
+                ]]
+                df_prev_t.columns = ["Contenedor", "Id Solicitante", "Linea Op",
+                                      "Type Arch ISO", "Recinto Origen", "Recinto Destino"]
+                st.dataframe(df_prev_t, width='stretch', hide_index=True)
+
+                if st.session_state["trans_reporte_bytes"] is None:
+                    _buf_t = io.BytesIO()
+                    generar_documento_transferencias(filas_t, _buf_t)
+                    st.session_state["trans_reporte_bytes"] = _buf_t.getvalue()
+
+                if not st.session_state["trans_guardado"]:
+                    # Folio automático, único e incremental — responsable
+                    # tomado del usuario con la sesión iniciada. Ninguno
+                    # de los dos se captura a mano.
+                    ok_g, resultado_g, folio_g = registrar_transferencia_auto(
+                        usuario["nombre_completo"], usuario["id"],
+                        usuario["nombre_completo"], filas_t,
+                    )
+                    if ok_g:
+                        st.session_state["trans_folio"] = folio_g
+                        st.session_state["trans_responsable"] = usuario["nombre_completo"]
+                        st.session_state["trans_guardado"] = True
+                        invalidar_cache_transferencias()
+                    else:
+                        st.error(f"No se pudo registrar el caso: {resultado_g}")
+
+                if st.session_state["trans_guardado"]:
+                    st.info(f"📋 Folio asignado: **{st.session_state['trans_folio']}** — "
+                            f"Responsable: **{st.session_state['trans_responsable']}**")
+                    st.download_button(
+                        "⬇️ Descargar documento final (Excel)",
+                        data=st.session_state["trans_reporte_bytes"],
+                        file_name=f"Transferencia_{st.session_state['trans_folio']}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="trans_btn_descargar",
+                    )
+
+                if st.button("🆕 Nuevo caso", key="trans_btn_nuevo"):
+                    st.session_state["trans_folio"]         = ""
+                    st.session_state["trans_responsable"]   = ""
+                    st.session_state["trans_df_recinto"]    = None
+                    st.session_state["trans_df_n4"]         = None
+                    st.session_state["trans_resultado"]     = None
+                    st.session_state["trans_overrides"]     = {}
+                    st.session_state["trans_reporte_bytes"] = None
+                    st.session_state["trans_guardado"]      = False
+                    st.session_state["trans_uploader_key_rec"] += 1
+                    st.session_state["trans_uploader_key_n4"]  += 1
+                    st.rerun()
+
+    # ── Sub-pestaña: Casos Registrados (consulta pública, solo lectura) ──
+    with sub_nav_t[1]:
+        st.markdown("<div class='sec-hdr'>📋 Casos Registrados</div>", unsafe_allow_html=True)
+        casos_t = _cached_transferencias_casos()
+
+        buscar_t = st.text_input("🔎 Buscar por folio o responsable", key="trans_buscar")
+        if buscar_t.strip():
+            _bt = buscar_t.strip().upper()
+            casos_t = [c for c in casos_t
+                       if _bt in (c.get("folio") or "").upper()
+                       or _bt in (c.get("responsable") or "").upper()]
+
+        if not casos_t:
+            st.info("No hay casos registrados todavía.")
+        else:
+            por_pag_t = 20
+            total_pags_t = max(1, (len(casos_t) + por_pag_t - 1) // por_pag_t)
+            pag_t = min(st.session_state["trans_pag"], total_pags_t)
+            ini_t = (pag_t - 1) * por_pag_t
+            pagina_t = casos_t[ini_t: ini_t + por_pag_t]
+
+            for c in pagina_t:
+                with st.container(border=True):
+                    cc1, cc2, cc3 = st.columns([2, 2, 1])
+                    with cc1:
+                        st.write(f"**Folio:** {c['folio']}")
+                        st.write(f"**Responsable:** {c.get('responsable') or '—'}")
+                    with cc2:
+                        st.write(f"**Fecha:** {fecha_hora_mx(c.get('fecha_creacion'))}")
+                        st.write(f"**Contenedores:** {c.get('total_contenedores', 0)}")
+                    with cc3:
+                        if st.button("🔍 Ver detalle", key=f"vdet_trans_{c['id']}"):
+                            with st.spinner("Cargando..."):
+                                det_t = obtener_transferencias_detalle(c["id"])
+                            if det_t:
+                                st.dataframe(pd.DataFrame(det_t), width='stretch', hide_index=True)
+                            else:
+                                st.info("Sin detalle disponible.")
+
+            pp1, pp2, pp3 = st.columns([1, 2, 1])
+            with pp1:
+                if st.button("◀ Anterior", disabled=pag_t <= 1, key="trans_pag_ant"):
+                    st.session_state["trans_pag"] = pag_t - 1
+                    st.rerun()
+            with pp2:
+                st.markdown(f"<div style='text-align:center;'>Página {pag_t} de {total_pags_t}</div>",
+                            unsafe_allow_html=True)
+            with pp3:
+                if st.button("Siguiente ▶", disabled=pag_t >= total_pags_t, key="trans_pag_sig"):
+                    st.session_state["trans_pag"] = pag_t + 1
+                    st.rerun()
+
+if es_admin and IDX_USUARIOS is not None:
+    with nav[IDX_USUARIOS]:
+        st.markdown("<div class='admin-hdr'>Gestión de Usuarios</div>",
+                    unsafe_allow_html=True)
+
+        # ── Crear nuevo usuario ───────────────────────────────
+        with st.expander("➕ Crear nuevo usuario", expanded=False):
+            with st.form("form_nuevo_usuario"):
+                cu1, cu2 = st.columns(2)
+                nuevo_username = cu1.text_input("Usuario")
+                nuevo_nombre   = cu2.text_input("Nombre completo")
+                cu3, cu4 = st.columns(2)
+                nuevo_pwd  = cu3.text_input("Contraseña", type="password")
+                nuevo_pwd2 = cu4.text_input("Confirmar contraseña", type="password")
+                nuevo_rol  = st.selectbox("Rol", ["usuario", "admin"])
+
+                if st.form_submit_button("Crear usuario", type="primary"):
+                    if not all([nuevo_username, nuevo_nombre, nuevo_pwd, nuevo_pwd2]):
+                        st.warning("Completa todos los campos")
+                    elif nuevo_pwd != nuevo_pwd2:
+                        st.error("Las contraseñas no coinciden")
+                    elif len(nuevo_pwd) < 6:
+                        st.error("La contraseña debe tener al menos 6 caracteres")
+                    else:
+                        ok, msg = crear_usuario(nuevo_username, nuevo_pwd,
+                                                nuevo_nombre, nuevo_rol)
+                        if ok:
+                            st.success(msg)
+                            st.rerun()
+                        else:
+                            st.error(msg)
+
+        # ── Rotación para asignación masiva de NC ─────────────
+        st.markdown("### 🔄 Rotación de asignación masiva de NC")
+        st.caption("Marca **En rotación** a quienes deben recibir NC en el reparto automático "
+                   "(desmárcalos, por ejemplo, si están de vacaciones). **Orden** define quién es "
+                   "la persona 1, 2, 3… del ciclo (0 = sin orden, va al final). Los usuarios "
+                   "inactivos nunca entran al ciclo.")
+        _usrs_rot = [u for u in _cached_usuarios() if u["activo"]]
+        if _usrs_rot and "en_rotacion" not in _usrs_rot[0]:
+            st.warning("Falta ejecutar el SQL de rotación en Supabase (columnas en_rotacion / orden_rotacion).")
+        _df_rot = pd.DataFrame([{
+            "id": u["id"],
+            "Nombre": u["nombre_completo"],
+            "Rol": "Admin" if u["rol"] == "admin" else "Usuario",
+            "En rotación": u.get("en_rotacion", True) is not False,
+            "Orden": int(u.get("orden_rotacion") or 0),
+        } for u in _usrs_rot])
+        if not _df_rot.empty:
+            _df_rot_ed = st.data_editor(
+                _df_rot, key="editor_rotacion", hide_index=True, width='stretch',
+                column_order=["Nombre", "Rol", "En rotación", "Orden"],
+                disabled=["Nombre", "Rol"],
+                column_config={"Orden": st.column_config.NumberColumn(min_value=0, max_value=99, step=1)})
+            if st.button("💾 Guardar rotación", key="btn_guardar_rot"):
+                _err_rot = []
+                for _, r in _df_rot_ed.iterrows():
+                    _orig = _df_rot[_df_rot["id"] == r["id"]].iloc[0]
+                    if bool(r["En rotación"]) != bool(_orig["En rotación"]) or int(r["Orden"] or 0) != int(_orig["Orden"]):
+                        ok_r, e_r = actualizar_rotacion_usuario(r["id"], bool(r["En rotación"]),
+                                                                int(r["Orden"] or 0) or None)
+                        if not ok_r:
+                            _err_rot.append(f"{r['Nombre']}: {e_r}")
+                _cached_usuarios.clear()
+                if _err_rot:
+                    st.error("No se pudo guardar: " + "; ".join(_err_rot))
+                else:
+                    st.success("Rotación guardada.")
+                    st.rerun()
+
+        # ── Lista de usuarios ─────────────────────────────────
+        st.markdown("### Usuarios registrados")
+        with st.spinner("Cargando usuarios..."):
+            usuarios = _cached_usuarios()
+
+        for u in usuarios:
+            es_yo = u["id"] == usuario["id"]
+            fecha_u = u["fecha_creacion"][:10] if u["fecha_creacion"] else "—"
+            badge   = "🔴 Admin" if u["rol"] == "admin" else "🔵 Usuario"
+            estado  = "✅ Activo" if u["activo"] else "⛔ Inactivo"
+
+            with st.expander(f"{badge} — {u['nombre_completo']} (@{u['username']}) — {estado}"):
+                st.write(f"**Creado:** {fecha_u}")
+                st.write(f"**Rol:** {u['rol'].capitalize()}")
+
+                ua1, ua2, ua3 = st.columns(3)
+
+                # Cambiar contraseña
+                with ua1:
+                    with st.popover("🔑 Cambiar contraseña"):
+                        np1 = st.text_input("Nueva contraseña", type="password",
+                                             key=f"np1_{u['id']}")
+                        np2 = st.text_input("Confirmar", type="password",
+                                             key=f"np2_{u['id']}")
+                        if st.button("Guardar", key=f"savepwd_{u['id']}"):
+                            if np1 and np1 == np2:
+                                ok, msg = cambiar_password(u["id"], np1)
+                                st.session_state[f"pwd_msg_{u['id']}"] = (ok, msg)
+                                st.rerun()
+                            else:
+                                st.session_state[f"pwd_msg_{u['id']}"] = (False, "Las contraseñas no coinciden")
+                                st.rerun()
+
+                # Mensaje fuera del popover
+                if f"pwd_msg_{u['id']}" in st.session_state:
+                    ok_m, msg_m = st.session_state.pop(f"pwd_msg_{u['id']}")
+                    if ok_m:
+                        st.success(msg_m)
+                    else:
+                        st.warning(msg_m)
+
+                # Activar / Desactivar
+                with ua2:
+                    if not es_yo:
+                        lbl = "⛔ Desactivar" if u["activo"] else "✅ Activar"
+                        if st.button(lbl, key=f"toggle_{u['id']}"):
+                            toggle_usuario(u["id"], not u["activo"])
+                            st.rerun()
+
+                # Eliminar
+                with ua3:
+                    if not es_yo:
+                        if st.button("🗑️ Eliminar", key=f"delusr_{u['id']}"):
+                            if eliminar_usuario(u["id"]):
+                                st.success("Usuario eliminado")
+                                st.rerun()
+                            else:
+                                st.error("Error al eliminar")
+
+        # ── Gestión de Motivos y Estatus de NC (solo Admin) ──────
+        st.markdown("---")
+        st.markdown("<div class='admin-hdr'>Motivos de Solicitud de NC</div>",
+                    unsafe_allow_html=True)
+
+        with st.expander("➕ Agregar nuevo motivo"):
+            nuevo_mot = st.text_input("Texto del motivo", key="nuevo_motivo_txt")
+            if st.button("Agregar motivo", key="btn_add_motivo"):
+                if nuevo_mot.strip():
+                    crear_nc_motivo(nuevo_mot.strip())
+                    st.success("Motivo agregado")
+                    st.rerun()
+
+        for m in _cached_nc_motivos():
+            mc1, mc2, mc3 = st.columns([5, 1, 1])
+            with mc1:
+                edit_mot = st.text_input("Motivo", value=m["texto"],
+                                         key=f"edit_mot_{m['id']}",
+                                         label_visibility="collapsed")
+            with mc2:
+                if st.button("💾", key=f"save_mot_{m['id']}"):
+                    editar_nc_motivo(m["id"], edit_mot)
+                    st.success("Actualizado")
+                    st.rerun()
+            with mc3:
+                if st.button("🗑️", key=f"del_mot_{m['id']}"):
+                    eliminar_nc_motivo(m["id"])
+                    st.rerun()
+
+        st.markdown("<div class='admin-hdr'>Estatus de NC</div>", unsafe_allow_html=True)
+
+        with st.expander("➕ Agregar nuevo estatus"):
+            nuevo_est = st.text_input("Texto del estatus", key="nuevo_estatus_txt")
+            es_conc = st.checkbox("Marca la NC como concluida", key="nuevo_estatus_conc")
+            if st.button("Agregar estatus", key="btn_add_estatus"):
+                if nuevo_est.strip():
+                    crear_nc_estatus(nuevo_est.strip(), es_conc)
+                    st.success("Estatus agregado")
+                    st.rerun()
+
+        for e in _cached_nc_estatus():
+            ec1, ec2, ec3 = st.columns([5, 1, 1])
+            with ec1:
+                edit_est = st.text_input("Estatus", value=e["texto"],
+                                         key=f"edit_est_{e['id']}",
+                                         label_visibility="collapsed")
+            with ec2:
+                if st.button("💾", key=f"save_est_{e['id']}"):
+                    editar_nc_estatus(e["id"], edit_est, e.get("es_concluido", False))
+                    st.success("Actualizado")
+                    st.rerun()
+            with ec3:
+                if st.button("🗑️", key=f"del_est_{e['id']}"):
+                    eliminar_nc_estatus(e["id"])
+                    st.rerun()
+
+        # ── Catálogos del módulo Transferencias (solo Admin) ─────
+        st.markdown("---")
+        st.markdown("<div class='admin-hdr'>Catálogo de Recintos (Transferencias)</div>",
+                    unsafe_allow_html=True)
+        st.caption("Los códigos son fijos y no se crean ni editan aquí — solo se aprueban "
+                   "o rechazan nombres nuevos propuestos por los usuarios.")
+
+        recintos_todos = _cached_transferencias_recintos()
+        pendientes_r = [r for r in recintos_todos if not r.get("aprobado")]
+        aprobados_r  = [r for r in recintos_todos if r.get("aprobado")]
+
+        if pendientes_r:
+            st.markdown("**🟡 Nombres pendientes de aprobar**")
+            for r in pendientes_r:
+                rc1, rc2, rc3, rc4 = st.columns([3, 2, 1, 1])
+                with rc1:
+                    st.write(f"**{r['nombre']}** → código {r['codigo']}")
+                with rc2:
+                    st.caption(f"Propuesto por: {r.get('propuesto_por_nombre') or '—'}")
+                with rc3:
+                    if st.button("✅", key=f"aprob_rec_{r['id']}"):
+                        aprobar_transferencias_recinto(r["id"], usuario["id"])
+                        invalidar_cache_transferencias()
+                        st.rerun()
+                with rc4:
+                    if st.button("🗑️", key=f"rech_rec_{r['id']}"):
+                        rechazar_transferencias_recinto(r["id"])
+                        invalidar_cache_transferencias()
+                        st.rerun()
+        else:
+            st.caption("No hay nombres pendientes de aprobar.")
+
+        with st.expander("📄 Ver tabla completa de códigos y nombres reconocidos"):
+            if aprobados_r:
+                df_rec_admin = pd.DataFrame(aprobados_r)[["codigo", "nombre"]].sort_values("codigo")
+                st.dataframe(df_rec_admin, width='stretch', hide_index=True)
+            else:
+                st.info("Sin registros.")
+
+        st.markdown("<div class='admin-hdr'>Catálogo de Navieras (Transferencias)</div>",
+                    unsafe_allow_html=True)
+        st.caption("Aquí sí se agregan naviera + código nuevos directamente — el archivo "
+                   "de origen no tiene variabilidad.")
+
+        with st.expander("➕ Agregar naviera nueva"):
+            nv1, nv2 = st.columns(2)
+            with nv1:
+                nueva_naviera_nombre = st.text_input("Nombre (Line Op)", key="nueva_naviera_nombre")
+            with nv2:
+                nueva_naviera_codigo = st.number_input("Código", min_value=0, step=1,
+                                                        key="nueva_naviera_codigo")
+            if st.button("Agregar naviera", key="btn_add_naviera"):
+                if nueva_naviera_nombre.strip():
+                    crear_transferencias_naviera(int(nueva_naviera_codigo), nueva_naviera_nombre.strip())
+                    invalidar_cache_transferencias()
+                    st.success("Naviera agregada")
+                    st.rerun()
+
+        for n in _cached_transferencias_navieras():
+            ncc1, ncc2, ncc3 = st.columns([3, 2, 1])
+            with ncc1:
+                st.write(f"**{n['nombre']}**")
+            with ncc2:
+                st.write(f"Código: {n['codigo']}")
+            with ncc3:
+                if st.button("🗑️", key=f"del_nav_{n['id']}"):
+                    eliminar_transferencias_naviera(n["id"])
+                    invalidar_cache_transferencias()
+                    st.rerun()

@@ -1519,3 +1519,140 @@ def guardar_config_app(clave: str, valor):
         return True, None
     except Exception as e:
         return False, str(e)
+
+
+# ════════════════════════════════════════════════════════════════
+#   CLASIFICADOR DE CASOS — catálogo (clasif_motivos) y sugerencias
+#   (clasif_sugerencias). Solo el admin modifica el catálogo; los usuarios
+#   mandan sugerencias que el admin aprueba o rechaza con motivo.
+# ════════════════════════════════════════════════════════════════
+_CAMPOS_MOTIVO = ("motivo", "area", "descripcion", "palabras_clave", "no_confundir")
+
+
+def obtener_clasif_motivos(incluir_inactivos: bool = True):
+    try:
+        db = get_client()
+        q = db.table("clasif_motivos").select("*")
+        if not incluir_inactivos:
+            q = q.eq("activo", True)
+        return q.order("motivo").execute().data or []
+    except Exception:
+        return []
+
+
+def guardar_clasif_motivo(datos: dict, usuario_nombre: str, motivo_id: str = None):
+    """Crea (sin motivo_id) o actualiza un motivo. Regresa (True, fila) o (False, error)."""
+    from datetime import datetime, timezone
+    try:
+        db = get_client()
+        fila = {k: (datos.get(k) or "").strip() for k in _CAMPOS_MOTIVO if k in datos}
+        if "activo" in datos:
+            fila["activo"] = bool(datos["activo"])
+        fila["actualizado_por"] = usuario_nombre
+        fila["fecha_actualizacion"] = datetime.now(timezone.utc).isoformat()
+        if motivo_id:
+            res = db.table("clasif_motivos").update(fila).eq("id", motivo_id).execute()
+        else:
+            res = db.table("clasif_motivos").insert(fila).execute()
+        return True, (res.data[0] if res.data else {})
+    except Exception as e:
+        return False, str(e)
+
+
+def crear_clasif_sugerencia(tipo: str, propuesta: dict, comentario: str,
+                            usuario_id: str, usuario_nombre: str,
+                            motivo_id: str = None, motivo_nombre: str = ""):
+    try:
+        db = get_client()
+        res = db.table("clasif_sugerencias").insert({
+            "tipo": tipo, "motivo_id": motivo_id, "motivo_nombre": motivo_nombre,
+            "propuesta": propuesta or {}, "comentario": comentario,
+            "solicitante_id": usuario_id, "solicitante_nombre": usuario_nombre,
+            "estado": "pendiente", "notificado": False,
+        }).execute()
+        return True, (res.data[0] if res.data else {})
+    except Exception as e:
+        return False, str(e)
+
+
+def obtener_clasif_sugerencias(estado: str = None, solicitante_id: str = None, limite: int = 100):
+    try:
+        db = get_client()
+        q = db.table("clasif_sugerencias").select("*")
+        if estado:
+            q = q.eq("estado", estado)
+        if solicitante_id:
+            q = q.eq("solicitante_id", solicitante_id)
+        return q.order("fecha_creacion", desc=True).limit(limite).execute().data or []
+    except Exception:
+        return []
+
+
+def resolver_clasif_sugerencia(sug: dict, aprobar: bool, admin_nombre: str,
+                               motivo_rechazo: str = "", propuesta_final: dict = None):
+    """
+    Aprueba (aplica el cambio al catálogo) o rechaza (con motivo) una sugerencia.
+    propuesta_final permite que el admin ajuste el texto antes de aprobar.
+    Regresa (True, None) o (False, error).
+    """
+    from datetime import datetime, timezone
+    from app.clasificador import unir_palabras
+    try:
+        db = get_client()
+        prop = dict(propuesta_final if propuesta_final is not None else (sug.get("propuesta") or {}))
+        if aprobar:
+            tipo = sug.get("tipo")
+            mid = sug.get("motivo_id")
+            if tipo == "nuevo":
+                ok, r = guardar_clasif_motivo({**prop, "activo": True}, admin_nombre)
+            elif tipo in ("corregir", "palabras", "baja"):
+                if not mid:
+                    return False, "La sugerencia no indica a qué motivo aplica."
+                actual = db.table("clasif_motivos").select("*").eq("id", mid).execute().data
+                if not actual:
+                    return False, "El motivo ya no existe en el catálogo."
+                actual = actual[0]
+                if tipo == "corregir":
+                    datos = {k: v for k, v in prop.items() if k in _CAMPOS_MOTIVO and str(v).strip()}
+                elif tipo == "palabras":
+                    datos = {"palabras_clave": unir_palabras(actual.get("palabras_clave"),
+                                                             prop.get("palabras_clave", ""))}
+                    if str(prop.get("no_confundir") or "").strip():
+                        nc = (actual.get("no_confundir") or "").strip()
+                        datos["no_confundir"] = (nc + " | " if nc else "") + prop["no_confundir"].strip()
+                else:
+                    datos = {"activo": False}
+                ok, r = guardar_clasif_motivo(datos, admin_nombre, mid)
+            else:
+                return False, f"Tipo de sugerencia desconocido: {tipo}"
+            if not ok:
+                return False, r
+        db.table("clasif_sugerencias").update({
+            "estado": "aprobada" if aprobar else "rechazada",
+            "motivo_rechazo": None if aprobar else motivo_rechazo,
+            "propuesta": prop,
+            "resuelto_por": admin_nombre,
+            "fecha_resolucion": datetime.now(timezone.utc).isoformat(),
+            "notificado": False,
+        }).eq("id", sug["id"]).execute()
+        return True, None
+    except Exception as e:
+        return False, str(e)
+
+
+def obtener_clasif_sugerencias_sin_notificar(usuario_id: str):
+    try:
+        db = get_client()
+        return db.table("clasif_sugerencias").select("*").eq("solicitante_id", usuario_id) \
+                 .neq("estado", "pendiente").eq("notificado", False).execute().data or []
+    except Exception:
+        return []
+
+
+def marcar_clasif_sugerencias_notificadas(ids: list):
+    try:
+        if ids:
+            get_client().table("clasif_sugerencias").update({"notificado": True}).in_("id", ids).execute()
+        return True
+    except Exception:
+        return False

@@ -106,9 +106,9 @@ def resolver_inicio_previo(fecha_previo, fuera_de_ventana, es_profepa=False):
     usuario decide contabilizarla manualmente (el archivo BI no trae hora).
 
     Ventanas de asignación:
-      - Previo normal: Lunes a Viernes hasta las 16:59, Sábado hasta las 12:00.
+      - Previo normal: Lunes a Viernes antes de las 16:00, Sábado antes de las 12:00.
         Domingo no tiene ventana.
-      - Previo PROFEPA: Lunes a Viernes hasta las 12:59. Sábado y Domingo no
+      - Previo PROFEPA: Lunes a Viernes antes de las 13:00. Sábado y Domingo no
         tienen ventana (se saltan ambos).
 
     Si se programó DENTRO de la ventana, el conteo arranca ese mismo día

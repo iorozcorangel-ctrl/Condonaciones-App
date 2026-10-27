@@ -341,9 +341,9 @@ def calcular_desfases(df_bi, dias_especiales, perfil, horario_previo=None):
         if not fecha_previo:
             desfase_previo = 0
         else:
-            # Si el usuario indicó manualmente la hora en que se programó
-            # el previo, se ajusta la fecha desde la que arranca el conteo
-            # (el archivo BI no trae esa hora, así que es opcional).
+            # Hora de programación del previo (la captura el usuario de forma
+            # obligatoria porque el archivo BI no la trae): ajusta la fecha
+            # desde la que arranca el conteo.
             fecha_inicio_previo = fecha_previo
             ajuste = horario_previo.get(normalizar_contenedor(cont))
             if ajuste and ajuste.get("contar"):

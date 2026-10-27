@@ -3123,14 +3123,34 @@ with nav[IDX_TRANSFEREN]:
                     with cc2:
                         st.write(f"**Fecha:** {fecha_hora_mx(c.get('fecha_creacion'))}")
                         st.write(f"**Contenedores:** {c.get('total_contenedores', 0)}")
+                    _k_det = f"trans_det_abierto_{c['id']}"
+                    _abierto = st.session_state.get(_k_det, False)
                     with cc3:
-                        if st.button("🔍 Ver detalle", key=f"vdet_trans_{c['id']}"):
-                            with st.spinner("Cargando..."):
-                                det_t = obtener_transferencias_detalle(c["id"])
-                            if det_t:
-                                st.dataframe(pd.DataFrame(det_t), width='stretch', hide_index=True)
-                            else:
-                                st.info("Sin detalle disponible.")
+                        if st.button("🔼 Ocultar detalle" if _abierto else "🔍 Ver detalle",
+                                     key=f"vdet_trans_{c['id']}", width='stretch'):
+                            st.session_state[_k_det] = not _abierto
+                            st.rerun()
+                    # El detalle se muestra a todo lo ancho, debajo de los datos del caso
+                    if _abierto:
+                        with st.spinner("Cargando..."):
+                            det_t = obtener_transferencias_detalle(c["id"])
+                        if det_t:
+                            _df_det = pd.DataFrame(det_t).rename(columns={
+                                "contenedor": "No Contenedor", "id_solicitante": "Id Solicitante",
+                                "linea_op": "Linea Op", "type_arch_iso": "Type Arch ISO",
+                                "recinto_origen_codigo": "Recinto Origen",
+                                "recinto_destino_codigo": "Recinto Destino"})
+                            _cols = ["No Contenedor", "Id Solicitante", "Linea Op", "Type Arch ISO",
+                                     "Recinto Origen", "Recinto Destino"]
+                            _df_det = _df_det[[x for x in _cols if x in _df_det.columns]].astype(str)
+                            st.dataframe(
+                                _df_det, width='stretch', hide_index=True,
+                                height=min(420, 40 + 35 * len(_df_det)),
+                                column_config={x: st.column_config.TextColumn(x, width="medium",
+                                                                              alignment="center")
+                                               for x in _cols})
+                        else:
+                            st.info("Sin detalle disponible.")
 
             pp1, pp2, pp3 = st.columns([1, 2, 1])
             with pp1:

@@ -771,82 +771,83 @@ with nav[0]:
                 except Exception as e:
                     st.error(str(e))
 
-        # ── Ajuste de horario de previo (opcional) ─────────────
-        # El archivo BI no trae la hora en que se programó el previo, así
-        # que se pide de forma opcional por contenedor, solo cuando NO se
-        # está usando Condonación Manual Directa (ahí las reglas 3/4/5 no
-        # se calculan).
+        # ── Horario de programación del previo (OBLIGATORIO) ────
+        # El archivo BI no trae la hora en que se programó el previo, y de eso
+        # depende desde qué día arranca la Regla 3. Por cada contenedor con
+        # previo se preguntan 2 cosas (Sí/No) y no se deja iniciar el análisis
+        # hasta contestarlas. No aplica en Condonación Manual Directa.
+        #   Previo normal : L-V antes de las 16:00 · Sábado antes de las 12:00
+        #   Previo PROFEPA: L-V antes de las 13:00 · Sábado sin horario
+        #   Domingo: nunca hay horario (arranca el siguiente día con horario)
+        st.session_state["previo_faltantes"] = []
         if not cond_manual_check and st.session_state["df_bi"] is not None:
             df_bi_raw    = st.session_state["df_bi"]
             col_cont_raw = COL_BI["contenedor"]
             col_prev_raw = COL_BI["fecha_previo"]
 
             if col_cont_raw in df_bi_raw.columns and col_prev_raw in df_bi_raw.columns:
-                conts_con_previo = []
-                _vistos = set()
+                conts_con_previo = {}
                 for _, _r in df_bi_raw.iterrows():
                     _cont_norm = normalizar_contenedor(_r.get(col_cont_raw))
-                    if not _cont_norm or _cont_norm in _vistos:
-                        continue
-                    if to_date(_r.get(col_prev_raw)):
-                        conts_con_previo.append(_cont_norm)
-                        _vistos.add(_cont_norm)
+                    _fp = to_date(_r.get(col_prev_raw))
+                    if _cont_norm and _fp and _cont_norm not in conts_con_previo:
+                        conts_con_previo[_cont_norm] = _fp
 
                 if conts_con_previo:
-                    st.markdown("<div class='sec-hdr'>🕐 Ajuste de horario de previo (opcional)</div>",
-                                unsafe_allow_html=True)
+                    _DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+                    st.markdown("<div class='sec-hdr'>🕐 Horario de programación del previo "
+                                "(obligatorio)</div>", unsafe_allow_html=True)
                     st.caption(
-                        "El archivo BI no trae la hora en que se programó el previo. "
-                        "Si quieres que se considere en el cálculo de la Regla 3, "
-                        "actívalo por contenedor e indica si se programó dentro o "
-                        "después de la ventana de asignación. Si no lo activas para "
-                        "un contenedor, la regla funciona como siempre."
+                        "El archivo BI no trae la hora en que se programó el previo y de eso depende "
+                        "desde qué día cuenta la Regla 3. Contesta las 2 preguntas de cada contenedor. "
+                        "Horario de asignación: previo normal L-V antes de las 16:00 y sábado antes de "
+                        "las 12:00; previo PROFEPA L-V antes de las 13:00 (sábado no hay)."
                     )
                     horario_previo_prev = dict(st.session_state.get("horario_previo", {}))
-                    horario_previo_nuevo = {}
-                    with st.expander(
-                        f"Configurar horario de previo ({len(conts_con_previo)} contenedor(es))",
-                        expanded=False
-                    ):
-                        opciones_ventana = [
-                            "Se programó durante la ventana de asignación",
-                            "Se programó después de la ventana de asignación",
-                        ]
-                        for _cont in conts_con_previo:
+                    horario_previo_nuevo, faltantes = {}, []
+                    with st.container(border=True):
+                        for _cont, _fp in conts_con_previo.items():
                             _prev = horario_previo_prev.get(_cont, {})
-                            hc1, hc2, hc3 = st.columns([2, 1, 2])
-                            with hc1:
-                                st.markdown(f"**{_cont}**")
-                                _contar = st.checkbox(
-                                    "Contabilizar hora de programación",
-                                    value=_prev.get("contar", False),
-                                    disabled=bloqueado,
-                                    key=f"hp_contar_{_cont}"
-                                )
-                            if _contar:
-                                with hc2:
-                                    _profepa = st.checkbox(
-                                        "PROFEPA",
-                                        value=_prev.get("profepa", False),
-                                        disabled=bloqueado,
-                                        key=f"hp_profepa_{_cont}"
-                                    )
-                                with hc3:
-                                    _idx_def = 1 if _prev.get("fuera_ventana") else 0
-                                    _sel = st.selectbox(
-                                        "Momento de programación",
-                                        opciones_ventana,
-                                        index=_idx_def,
-                                        disabled=bloqueado,
-                                        key=f"hp_ventana_{_cont}"
-                                    )
-                                horario_previo_nuevo[_cont] = {
-                                    "contar":       True,
-                                    "profepa":      _profepa,
-                                    "fuera_ventana": _sel == opciones_ventana[1],
-                                }
-                            st.markdown("<hr style='margin:4px 0;'>", unsafe_allow_html=True)
+                            _dia = _fp.weekday()
+                            hc1, hc2, hc3 = st.columns([1.3, 1, 1.6])
+                            hc1.markdown(f"**{_cont}**  \nPrevio: {_DIAS[_dia]} {_fp.strftime('%d/%m/%Y')}")
+                            if _dia == 6:
+                                # Domingo: nunca hay horario (con o sin PROFEPA) → arranca el lunes
+                                hc2.caption("Domingo: no hay horario de asignación; el conteo "
+                                            "arranca el lunes. No hace falta contestar.")
+                                horario_previo_nuevo[_cont] = {"contar": True, "profepa": False,
+                                                               "fuera_ventana": True}
+                                continue
+                            _p = hc2.radio("¿Previo con PROFEPA?", ["Sí", "No"], horizontal=True,
+                                           index=None if "profepa" not in _prev else (0 if _prev["profepa"] else 1),
+                                           disabled=bloqueado, key=f"hp_profepa_{ukey}_{_cont}")
+                            _fuera = None
+                            if _p is not None:
+                                _profepa = _p == "Sí"
+                                if _dia == 6 or (_dia == 5 and _profepa):
+                                    hc3.caption("Ese día no hay horario de asignación: el conteo "
+                                                "arranca el siguiente día hábil.")
+                                    _fuera = True
+                                else:
+                                    _corte = "13:00" if _profepa else ("12:00" if _dia == 5 else "16:00")
+                                    _r = hc3.radio(f"¿Se programó antes de las {_corte}?", ["Sí", "No"],
+                                                   horizontal=True,
+                                                   index=None if "fuera_ventana" not in _prev
+                                                   else (1 if _prev["fuera_ventana"] else 0),
+                                                   disabled=bloqueado,
+                                                   key=f"hp_hora_{ukey}_{_cont}_{_corte}")
+                                    if _r is not None:
+                                        _fuera = _r == "No"
+                            if _p is None or _fuera is None:
+                                faltantes.append(_cont)
+                            else:
+                                horario_previo_nuevo[_cont] = {"contar": True, "profepa": _p == "Sí",
+                                                               "fuera_ventana": _fuera}
+                    if faltantes:
+                        st.warning(f"Faltan por contestar {len(faltantes)} contenedor(es): "
+                                   + ", ".join(faltantes))
                     st.session_state["horario_previo"] = horario_previo_nuevo
+                    st.session_state["previo_faltantes"] = faltantes
 
         # ── Botones principales ───────────────────────────────
         st.markdown("---")
@@ -908,6 +909,13 @@ with nav[0]:
                              "consecutivo de 4 o 5 dígitos (ej. NC-2585 o NC-10000).")
                     st.stop()
                 nc_input = normalizar_numero_nc(nc_input)
+
+            # Horario de previo: obligatorio contestar todos los contenedores con previo
+            if st.session_state.get("previo_faltantes"):
+                st.error("Contesta el horario de programación del previo de: "
+                         + ", ".join(st.session_state["previo_faltantes"])
+                         + ". Está en la sección 🕐 Horario de programación del previo.")
+                st.stop()
 
             perfil  = st.session_state["perfiles"][st.session_state["perfil_idx"]]
             alertas = []
@@ -1980,23 +1988,22 @@ with nav[tab_reglas_idx]:
         `FechaPosicionamiento`, de forma individual por cada contenedor. Al iniciar
         el análisis se muestra una alerta para que esta información se valide.
 
-        🕐 **Ajuste de horario de previo (opcional):**
+        🕐 **Horario de programación del previo (obligatorio):**
         El archivo BI no trae la hora en que se programó el previo. En la pantalla
-        de Análisis, justo después de subir el Archivo BI, puedes activarlo
-        manualmente por contenedor e indicar si se programó dentro o después de la
-        ventana de asignación:
+        de Análisis, después de subir el Archivo BI, se contestan 2 preguntas por
+        cada contenedor con previo: **¿Previo con PROFEPA?** y **¿Se programó antes
+        de la hora de corte?** No se puede iniciar el análisis sin contestarlas.
 
-        - **Previo normal:** Lunes a Viernes hasta las 16:59, Sábado hasta las 12:00.
-          El domingo no tiene ventana.
-        - **Previo PROFEPA** *(marcando la casilla correspondiente)*: Lunes a Viernes
-          hasta las 12:59. Sábado y domingo no tienen ventana.
+        - **Previo normal:** Lunes a Viernes antes de las 16:00, Sábado antes de las 12:00.
+          El domingo no tiene horario.
+        - **Previo PROFEPA:** Lunes a Viernes antes de las 13:00. Sábado y domingo no
+          tienen horario.
 
-        Si se programó **dentro** de la ventana, el conteo arranca ese mismo día
-        (igual que siempre). Si se programó **después** de la ventana, o cae en un
-        día sin ventana, el conteo arranca el siguiente día que sí tiene ventana.
-
-        Si para un contenedor **no se activa** este ajuste, la Regla 3 funciona de
-        manera normal, tal como se ha manejado siempre.
+        Si se programó **antes** del corte, el conteo arranca ese mismo día. Si se
+        programó **después**, o cae en un día sin horario, el conteo arranca el
+        siguiente día que sí tiene horario. Ejemplos (3 días hábiles, sin PROFEPA):
+        lunes 12:00 → último día jueves; lunes 16:00 → último día viernes;
+        sábado 9:00 → último día miércoles; sábado 13:00 → último día jueves.
 
         💡 **El número de días puede modificarse en perfiles personalizados.**
         """)

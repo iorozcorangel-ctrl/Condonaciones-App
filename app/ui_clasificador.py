@@ -6,13 +6,13 @@
 ================================================================
 """
 import html
-
+ 
 import pandas as pd
 import streamlit as st
-
+ 
 from app import clasificador as cl
 from app import database as dbm
-
+ 
 TIPOS_SUG = {
     "nuevo":    "➕ Motivo nuevo",
     "corregir": "✏️ Corregir un motivo existente",
@@ -25,43 +25,43 @@ NIVEL_TXT = {
     "baja":  ("error",   "Confianza baja: el correo es vago o no se parece a ningún motivo. "
                          "Revisa las opciones o búscalo en el catálogo."),
 }
-
-
+ 
+ 
 # ── Datos con caché (se limpia al modificar) ──────────────────────
 @st.cache_data(ttl=60, show_spinner=False)
 def _motivos_todos():
     return dbm.obtener_clasif_motivos(incluir_inactivos=True)
-
-
+ 
+ 
 @st.cache_data(ttl=10, show_spinner=False)
 def _sug_pendientes():
     return dbm.obtener_clasif_sugerencias(estado="pendiente")
-
-
+ 
+ 
 def invalidar_cache_clasificador():
     _motivos_todos.clear()
     _sug_pendientes.clear()
-
-
+ 
+ 
 def _activos():
     return [m for m in _motivos_todos() if m.get("activo", True)]
-
-
+ 
+ 
 @st.cache_resource(show_spinner=False)
 def _indice_para(firma: tuple):
     # firma = (id, fecha_actualizacion) de cada motivo activo → se reconstruye solo si algo cambió
     return cl.construir_indice(_activos())
-
-
+ 
+ 
 def _indice():
     act = _activos()
     return _indice_para(tuple((m.get("id"), m.get("fecha_actualizacion")) for m in act))
-
-
+ 
+ 
 def _esc(t):
     return html.escape(str(t or ""))
-
-
+ 
+ 
 # ── Avisos al iniciar sesión (los llama app.py una vez por sesión) ──
 def avisos_inicio_sesion(usuario: dict, es_admin: bool):
     try:
@@ -81,8 +81,8 @@ def avisos_inicio_sesion(usuario: dict, es_admin: bool):
             dbm.marcar_clasif_sugerencias_notificadas([r["id"] for r in res])
     except Exception:
         pass
-
-
+ 
+ 
 # ════════════════════════════════════════════════════════════════
 def render_clasificador(usuario: dict, es_admin: bool):
     st.markdown(_CSS, unsafe_allow_html=True)
@@ -91,13 +91,14 @@ def render_clasificador(usuario: dict, es_admin: bool):
               <img class='clf-masc' alt='Mascota' width='190' style='width:190px;max-width:40vw;height:auto;image-rendering:pixelated' src='data:image/png;base64,{cl.MASCOTA_PNG_B64}'>
               <div class='clf-globo'><b>¡Ajusto cada caso a su área!</b><br>
               Pega el correo del cliente o busca en el catálogo de tipos de caso.</div>
+              {_ESCENA_SVG}
             </div>""", unsafe_allow_html=True)
-
+ 
     if not _motivos_todos():
         st.warning("El catálogo está vacío o aún no existe en la base de datos. "
                    "Corre el archivo **SQL_clasificador_casos.sql** en Supabase "
                    "(o, si eres admin, importa el Excel en 📚 Catálogo).")
-
+ 
     n_pend = len(_sug_pendientes()) if es_admin else 0
     tabs = st.tabs(["🔍 Clasificar", "📚 Catálogo",
                     f"💡 Sugerencias{f' ({n_pend})' if n_pend else ''}"])
@@ -107,8 +108,8 @@ def render_clasificador(usuario: dict, es_admin: bool):
         _tab_catalogo(usuario, es_admin)
     with tabs[2]:
         _tab_sugerencias(usuario, es_admin)
-
-
+ 
+ 
 # ── 🔍 Clasificar ──────────────────────────────────────────────
 def _tab_clasificar(usuario):
     c1, c2 = st.columns([1.15, 1])
@@ -136,7 +137,7 @@ def _tab_clasificar(usuario):
             for m in encontrados:
                 with st.expander(f"{m['motivo']}  ·  {m.get('area') or '—'}"):
                     _detalle_motivo(m)
-
+ 
     R = st.session_state.get("clf_resultado")
     if R is None:
         return
@@ -149,7 +150,7 @@ def _tab_clasificar(usuario):
     if R["empate"]:
         msg += " Hay empate entre las primeras opciones: decide por el área."
     getattr(st, tipo)(msg)
-
+ 
     for i, it in enumerate(R["items"]):
         m = it["motivo"]
         with st.container(border=True):
@@ -171,8 +172,8 @@ def _tab_clasificar(usuario):
     if conf:
         st.success(f"Caso clasificado como **{conf['motivo']}** → área **{conf.get('area')}**. "
                    + (conf.get("_msg") or ""))
-
-
+ 
+ 
 def _confirmar(usuario, m):
     """Confirmar NO cambia el catálogo: manda las palabras útiles al admin como sugerencia."""
     texto = st.session_state.get("clf_texto_usado", "")
@@ -190,8 +191,8 @@ def _confirmar(usuario, m):
             msg = ("Se enviaron al admin estas palabras para que el clasificador aprenda: "
                    + ", ".join(nuevas) + ".")
     st.session_state["clf_confirmado"] = dict(m, _msg=msg)
-
-
+ 
+ 
 def _detalle_motivo(m):
     st.markdown(f"**Área:** {_esc(m.get('area'))}")
     if m.get("descripcion"):
@@ -200,8 +201,8 @@ def _detalle_motivo(m):
         st.markdown(f"**Palabras clave:** {_esc(m['palabras_clave'])}")
     if (m.get("no_confundir") or "").strip():
         st.markdown(f"**No confundir con:** {_esc(m['no_confundir'])}")
-
-
+ 
+ 
 # ── 📚 Catálogo ─────────────────────────────────────────────────
 def _tab_catalogo(usuario, es_admin):
     todos = _motivos_todos()
@@ -225,15 +226,15 @@ def _tab_catalogo(usuario, es_admin):
             "Palabras clave": m.get("palabras_clave") or "", "No confundir con": m.get("no_confundir") or "",
             **({"Activo": "Sí" if m.get("activo", True) else "No"} if es_admin else {}),
         } for m in lista]), hide_index=True, width='stretch', height=min(420, 40 + 35 * len(lista)))
-
+ 
     st.download_button("📤 Descargar catálogo en Excel", data=cl.exportar_excel(todos if es_admin else activos),
                        file_name="catalogo_tipos_de_caso.xlsx", key="clf_exportar",
                        help="Mismo formato que se importa: puedes editarlo y volver a subirlo.")
-
+ 
     if not es_admin:
         st.info("¿Falta algo o algo está mal? Mándalo en la pestaña 💡 Sugerencias; el admin lo revisa.")
         return
-
+ 
     # ── Admin: editar / agregar ──
     st.markdown("<div class='admin-hdr'>✏️ Editar o agregar un motivo (admin)</div>", unsafe_allow_html=True)
     opciones = ["➕ Nuevo motivo"] + [f"{m['motivo']}  ·  {m.get('area')}" + ("" if m.get("activo", True) else "  (baja)")
@@ -273,7 +274,7 @@ def _tab_catalogo(usuario, es_admin):
                 st.rerun()
             else:
                 st.error(f"No se pudo guardar: {r}")
-
+ 
     # ── Admin: importar Excel ──
     with st.expander("📥 Importar / actualizar catálogo desde Excel"):
         st.caption("Columnas que se reconocen por su título (en cualquier orden): **MOTIVO DE CASO** y "
@@ -345,8 +346,8 @@ def _tab_catalogo(usuario, es_admin):
             st.success(f"Listo: se aplicaron {hechos} cambio(s).")
             for e in errores:
                 st.error(e)
-
-
+ 
+ 
 # ── 💡 Sugerencias ──────────────────────────────────────────────
 def _tab_sugerencias(usuario, es_admin):
     activos = sorted(_activos(), key=lambda x: cl.normalizar(x["motivo"]))
@@ -354,7 +355,7 @@ def _tab_sugerencias(usuario, es_admin):
     if es_admin:
         _panel_admin_sugerencias(usuario, areas)
         st.markdown("---")
-
+ 
     st.markdown("<div class='sec-hdr'>💡 Enviar una sugerencia</div>", unsafe_allow_html=True)
     if st.session_state.get("clf_sug_ok"):
         st.success(st.session_state.pop("clf_sug_ok"))
@@ -410,7 +411,7 @@ def _tab_sugerencias(usuario, es_admin):
                 st.rerun()
             else:
                 st.error(f"No se pudo enviar: {r}")
-
+ 
     mias = dbm.obtener_clasif_sugerencias(solicitante_id=usuario["id"], limite=20)
     if mias:
         st.markdown("<div class='sec-hdr'>📨 Mis sugerencias</div>", unsafe_allow_html=True)
@@ -422,8 +423,8 @@ def _tab_sugerencias(usuario, es_admin):
             "Comentario": s.get("comentario") or "",
             "Motivo de rechazo": s.get("motivo_rechazo") or "",
         } for s in mias]), hide_index=True, width='stretch')
-
-
+ 
+ 
 def _panel_admin_sugerencias(usuario, areas):
     pend = _sug_pendientes()
     st.markdown(f"<div class='admin-hdr'>🔔 Sugerencias pendientes ({len(pend)})</div>", unsafe_allow_html=True)
@@ -473,8 +474,8 @@ def _panel_admin_sugerencias(usuario, areas):
                         st.rerun()
                     else:
                         st.error(f"No se pudo resolver: {err}")
-
-
+ 
+ 
 _CSS = """
 <style>
 .clf-cab{display:flex;align-items:flex-end;gap:18px;margin:2px 0 14px 0;flex-wrap:wrap;
@@ -492,5 +493,14 @@ _CSS = """
 .clf-chip{display:inline-block;font-family:monospace;font-size:11px;padding:1px 7px;margin:0 4px 4px 0;
   border-radius:4px;border:1px solid rgba(128,128,128,.4);opacity:.85}
 .clf-nc{font-size:13px;border-left:3px solid #E65100;padding:2px 8px;margin:2px 0 6px 0;opacity:.9}
+.clf-escena{flex:1 1 320px;min-width:0;height:118px;display:block}
+@media (max-width: 900px){.clf-escena{display:none}}
+@keyframes clfCarro{0%{transform:translate(0px,0)}8%{transform:translate(0px,0)}12%{transform:translate(0px,0)}20%{transform:translate(0px,0)}36%{transform:translate(50px,0)}42%{transform:translate(50px,0)}44%{transform:translate(50px,0)}50%{transform:translate(50px,0)}58%{transform:translate(50px,0)}62%{transform:translate(50px,0)}70%{transform:translate(50px,0)}86%{transform:translate(0px,0)}92%{transform:translate(0px,0)}94%{transform:translate(0px,0)}100%{transform:translate(0px,0)}}@keyframes clfCable{0%{transform:translate(0px,9px) scaleY(0.000)}8%{transform:translate(0px,9px) scaleY(0.700)}12%{transform:translate(0px,9px) scaleY(0.700)}20%{transform:translate(0px,9px) scaleY(0.000)}36%{transform:translate(50px,9px) scaleY(0.000)}42%{transform:translate(50px,9px) scaleY(1.300)}44%{transform:translate(50px,9px) scaleY(1.300)}50%{transform:translate(50px,9px) scaleY(0.000)}58%{transform:translate(50px,9px) scaleY(1.300)}62%{transform:translate(50px,9px) scaleY(1.300)}70%{transform:translate(50px,9px) scaleY(0.000)}86%{transform:translate(0px,9px) scaleY(0.000)}92%{transform:translate(0px,9px) scaleY(0.700)}94%{transform:translate(0px,9px) scaleY(0.700)}100%{transform:translate(0px,9px) scaleY(0.000)}}@keyframes clfSpreader{0%{transform:translate(0px,9px)}8%{transform:translate(0px,16px)}12%{transform:translate(0px,16px)}20%{transform:translate(0px,9px)}36%{transform:translate(50px,9px)}42%{transform:translate(50px,22px)}44%{transform:translate(50px,22px)}50%{transform:translate(50px,9px)}58%{transform:translate(50px,22px)}62%{transform:translate(50px,22px)}70%{transform:translate(50px,9px)}86%{transform:translate(0px,9px)}92%{transform:translate(0px,16px)}94%{transform:translate(0px,16px)}100%{transform:translate(0px,9px)}}@keyframes clfCont{0%{transform:translate(0px,18px)}8%{transform:translate(0px,18px)}12%{transform:translate(0px,18px)}20%{transform:translate(0px,11px)}36%{transform:translate(50px,11px)}42%{transform:translate(50px,24px)}44%{transform:translate(50px,24px)}50%{transform:translate(50px,24px)}58%{transform:translate(50px,24px)}62%{transform:translate(50px,24px)}70%{transform:translate(50px,11px)}86%{transform:translate(0px,11px)}92%{transform:translate(0px,18px)}94%{transform:translate(0px,18px)}100%{transform:translate(0px,18px)}}.clf-carro{animation:clfCarro 9s linear infinite}.clf-cable{transform-box:view-box;transform-origin:0 0;animation:clfCable 9s linear infinite}.clf-spreader{animation:clfSpreader 9s linear infinite}.clf-cont{animation:clfCont 9s linear infinite}@media (prefers-reduced-motion: reduce){.clf-carro,.clf-cable,.clf-spreader,.clf-cont{animation:none}}
 </style>
 """
+ 
+ 
+# Escena pixel art: patio de contenedores + grúa de patio que toma y deja un contenedor
+# (animación solo con CSS; se genera con un script, 1 unidad = 1 pixel de arte)
+_ESCENA_SVG = '<svg class="clf-escena" viewBox="0 0 280 32" preserveAspectRatio="xMaxYMax meet" shape-rendering="crispEdges" aria-hidden="true"><rect x="2" y="24" width="16" height="6" fill="#1b2a22"/><rect x="3" y="25" width="14" height="4" fill="#E65100"/><rect x="5" y="25" width="1" height="4" fill="#b33f00"/><rect x="8" y="25" width="1" height="4" fill="#b33f00"/><rect x="11" y="25" width="1" height="4" fill="#b33f00"/><rect x="14" y="25" width="1" height="4" fill="#b33f00"/><rect x="15" y="26" width="1" height="2" fill="#e8e8e8"/><rect x="2" y="18" width="16" height="6" fill="#1b2a22"/><rect x="3" y="19" width="14" height="4" fill="#1E6FB8"/><rect x="5" y="19" width="1" height="4" fill="#15528a"/><rect x="8" y="19" width="1" height="4" fill="#15528a"/><rect x="11" y="19" width="1" height="4" fill="#15528a"/><rect x="14" y="19" width="1" height="4" fill="#15528a"/><rect x="15" y="20" width="1" height="2" fill="#e8e8e8"/><rect x="2" y="12" width="16" height="6" fill="#1b2a22"/><rect x="3" y="13" width="14" height="4" fill="#2E8B57"/><rect x="5" y="13" width="1" height="4" fill="#22693f"/><rect x="8" y="13" width="1" height="4" fill="#22693f"/><rect x="11" y="13" width="1" height="4" fill="#22693f"/><rect x="14" y="13" width="1" height="4" fill="#22693f"/><rect x="15" y="14" width="1" height="2" fill="#e8e8e8"/><rect x="20" y="24" width="16" height="6" fill="#1b2a22"/><rect x="21" y="25" width="14" height="4" fill="#C62828"/><rect x="23" y="25" width="1" height="4" fill="#8e1c1c"/><rect x="26" y="25" width="1" height="4" fill="#8e1c1c"/><rect x="29" y="25" width="1" height="4" fill="#8e1c1c"/><rect x="32" y="25" width="1" height="4" fill="#8e1c1c"/><rect x="33" y="26" width="1" height="2" fill="#e8e8e8"/><rect x="20" y="18" width="16" height="6" fill="#1b2a22"/><rect x="21" y="19" width="14" height="4" fill="#7B8794"/><rect x="23" y="19" width="1" height="4" fill="#5b6570"/><rect x="26" y="19" width="1" height="4" fill="#5b6570"/><rect x="29" y="19" width="1" height="4" fill="#5b6570"/><rect x="32" y="19" width="1" height="4" fill="#5b6570"/><rect x="33" y="20" width="1" height="2" fill="#e8e8e8"/><rect x="38" y="24" width="16" height="6" fill="#1b2a22"/><rect x="39" y="25" width="14" height="4" fill="#F2B705"/><rect x="41" y="25" width="1" height="4" fill="#b88a00"/><rect x="44" y="25" width="1" height="4" fill="#b88a00"/><rect x="47" y="25" width="1" height="4" fill="#b88a00"/><rect x="50" y="25" width="1" height="4" fill="#b88a00"/><rect x="51" y="26" width="1" height="2" fill="#e8e8e8"/><rect x="38" y="18" width="16" height="6" fill="#1b2a22"/><rect x="39" y="19" width="14" height="4" fill="#E65100"/><rect x="41" y="19" width="1" height="4" fill="#b33f00"/><rect x="44" y="19" width="1" height="4" fill="#b33f00"/><rect x="47" y="19" width="1" height="4" fill="#b33f00"/><rect x="50" y="19" width="1" height="4" fill="#b33f00"/><rect x="51" y="20" width="1" height="2" fill="#e8e8e8"/><rect x="38" y="12" width="16" height="6" fill="#1b2a22"/><rect x="39" y="13" width="14" height="4" fill="#1E6FB8"/><rect x="41" y="13" width="1" height="4" fill="#15528a"/><rect x="44" y="13" width="1" height="4" fill="#15528a"/><rect x="47" y="13" width="1" height="4" fill="#15528a"/><rect x="50" y="13" width="1" height="4" fill="#15528a"/><rect x="51" y="14" width="1" height="2" fill="#e8e8e8"/><rect x="38" y="6" width="16" height="6" fill="#1b2a22"/><rect x="39" y="7" width="14" height="4" fill="#6D4C9F"/><rect x="41" y="7" width="1" height="4" fill="#4f3675"/><rect x="44" y="7" width="1" height="4" fill="#4f3675"/><rect x="47" y="7" width="1" height="4" fill="#4f3675"/><rect x="50" y="7" width="1" height="4" fill="#4f3675"/><rect x="51" y="8" width="1" height="2" fill="#e8e8e8"/><rect x="56" y="24" width="16" height="6" fill="#1b2a22"/><rect x="57" y="25" width="14" height="4" fill="#2E8B57"/><rect x="59" y="25" width="1" height="4" fill="#22693f"/><rect x="62" y="25" width="1" height="4" fill="#22693f"/><rect x="65" y="25" width="1" height="4" fill="#22693f"/><rect x="68" y="25" width="1" height="4" fill="#22693f"/><rect x="69" y="26" width="1" height="2" fill="#e8e8e8"/><rect x="74" y="24" width="16" height="6" fill="#1b2a22"/><rect x="75" y="25" width="14" height="4" fill="#7B8794"/><rect x="77" y="25" width="1" height="4" fill="#5b6570"/><rect x="80" y="25" width="1" height="4" fill="#5b6570"/><rect x="83" y="25" width="1" height="4" fill="#5b6570"/><rect x="86" y="25" width="1" height="4" fill="#5b6570"/><rect x="87" y="26" width="1" height="2" fill="#e8e8e8"/><rect x="74" y="18" width="16" height="6" fill="#1b2a22"/><rect x="75" y="19" width="14" height="4" fill="#6D4C9F"/><rect x="77" y="19" width="1" height="4" fill="#4f3675"/><rect x="80" y="19" width="1" height="4" fill="#4f3675"/><rect x="83" y="19" width="1" height="4" fill="#4f3675"/><rect x="86" y="19" width="1" height="4" fill="#4f3675"/><rect x="87" y="20" width="1" height="2" fill="#e8e8e8"/><rect x="74" y="12" width="16" height="6" fill="#1b2a22"/><rect x="75" y="13" width="14" height="4" fill="#C62828"/><rect x="77" y="13" width="1" height="4" fill="#8e1c1c"/><rect x="80" y="13" width="1" height="4" fill="#8e1c1c"/><rect x="83" y="13" width="1" height="4" fill="#8e1c1c"/><rect x="86" y="13" width="1" height="4" fill="#8e1c1c"/><rect x="87" y="14" width="1" height="2" fill="#e8e8e8"/><rect x="92" y="24" width="16" height="6" fill="#1b2a22"/><rect x="93" y="25" width="14" height="4" fill="#1E6FB8"/><rect x="95" y="25" width="1" height="4" fill="#15528a"/><rect x="98" y="25" width="1" height="4" fill="#15528a"/><rect x="101" y="25" width="1" height="4" fill="#15528a"/><rect x="104" y="25" width="1" height="4" fill="#15528a"/><rect x="105" y="26" width="1" height="2" fill="#e8e8e8"/><rect x="92" y="18" width="16" height="6" fill="#1b2a22"/><rect x="93" y="19" width="14" height="4" fill="#E65100"/><rect x="95" y="19" width="1" height="4" fill="#b33f00"/><rect x="98" y="19" width="1" height="4" fill="#b33f00"/><rect x="101" y="19" width="1" height="4" fill="#b33f00"/><rect x="104" y="19" width="1" height="4" fill="#b33f00"/><rect x="105" y="20" width="1" height="2" fill="#e8e8e8"/><rect x="110" y="24" width="16" height="6" fill="#1b2a22"/><rect x="111" y="25" width="14" height="4" fill="#6D4C9F"/><rect x="113" y="25" width="1" height="4" fill="#4f3675"/><rect x="116" y="25" width="1" height="4" fill="#4f3675"/><rect x="119" y="25" width="1" height="4" fill="#4f3675"/><rect x="122" y="25" width="1" height="4" fill="#4f3675"/><rect x="123" y="26" width="1" height="2" fill="#e8e8e8"/><rect x="110" y="18" width="16" height="6" fill="#1b2a22"/><rect x="111" y="19" width="14" height="4" fill="#F2B705"/><rect x="113" y="19" width="1" height="4" fill="#b88a00"/><rect x="116" y="19" width="1" height="4" fill="#b88a00"/><rect x="119" y="19" width="1" height="4" fill="#b88a00"/><rect x="122" y="19" width="1" height="4" fill="#b88a00"/><rect x="123" y="20" width="1" height="2" fill="#e8e8e8"/><rect x="110" y="12" width="16" height="6" fill="#1b2a22"/><rect x="111" y="13" width="14" height="4" fill="#2E8B57"/><rect x="113" y="13" width="1" height="4" fill="#22693f"/><rect x="116" y="13" width="1" height="4" fill="#22693f"/><rect x="119" y="13" width="1" height="4" fill="#22693f"/><rect x="122" y="13" width="1" height="4" fill="#22693f"/><rect x="123" y="14" width="1" height="2" fill="#e8e8e8"/><rect x="156" y="24" width="16" height="6" fill="#1b2a22"/><rect x="157" y="25" width="14" height="4" fill="#7B8794"/><rect x="159" y="25" width="1" height="4" fill="#5b6570"/><rect x="162" y="25" width="1" height="4" fill="#5b6570"/><rect x="165" y="25" width="1" height="4" fill="#5b6570"/><rect x="168" y="25" width="1" height="4" fill="#5b6570"/><rect x="169" y="26" width="1" height="2" fill="#e8e8e8"/><rect x="240" y="24" width="16" height="6" fill="#1b2a22"/><rect x="241" y="25" width="14" height="4" fill="#2E8B57"/><rect x="243" y="25" width="1" height="4" fill="#22693f"/><rect x="246" y="25" width="1" height="4" fill="#22693f"/><rect x="249" y="25" width="1" height="4" fill="#22693f"/><rect x="252" y="25" width="1" height="4" fill="#22693f"/><rect x="253" y="26" width="1" height="2" fill="#e8e8e8"/><rect x="240" y="18" width="16" height="6" fill="#1b2a22"/><rect x="241" y="19" width="14" height="4" fill="#E65100"/><rect x="243" y="19" width="1" height="4" fill="#b33f00"/><rect x="246" y="19" width="1" height="4" fill="#b33f00"/><rect x="249" y="19" width="1" height="4" fill="#b33f00"/><rect x="252" y="19" width="1" height="4" fill="#b33f00"/><rect x="253" y="20" width="1" height="2" fill="#e8e8e8"/><rect x="258" y="24" width="16" height="6" fill="#1b2a22"/><rect x="259" y="25" width="14" height="4" fill="#1E6FB8"/><rect x="261" y="25" width="1" height="4" fill="#15528a"/><rect x="264" y="25" width="1" height="4" fill="#15528a"/><rect x="267" y="25" width="1" height="4" fill="#15528a"/><rect x="270" y="25" width="1" height="4" fill="#15528a"/><rect x="271" y="26" width="1" height="2" fill="#e8e8e8"/><rect x="148" y="2" width="3" height="28" fill="#1b2a22"/><rect x="149" y="3" width="1" height="27" fill="#F4C430"/><rect x="236" y="2" width="3" height="28" fill="#1b2a22"/><rect x="237" y="3" width="1" height="27" fill="#F4C430"/><rect x="148" y="2" width="91" height="4" fill="#1b2a22"/><rect x="149" y="3" width="89" height="2" fill="#F4C430"/><rect x="152" y="3" width="1" height="2" fill="#b8901a"/><rect x="158" y="3" width="1" height="2" fill="#b8901a"/><rect x="164" y="3" width="1" height="2" fill="#b8901a"/><rect x="170" y="3" width="1" height="2" fill="#b8901a"/><rect x="176" y="3" width="1" height="2" fill="#b8901a"/><rect x="182" y="3" width="1" height="2" fill="#b8901a"/><rect x="188" y="3" width="1" height="2" fill="#b8901a"/><rect x="194" y="3" width="1" height="2" fill="#b8901a"/><rect x="200" y="3" width="1" height="2" fill="#b8901a"/><rect x="206" y="3" width="1" height="2" fill="#b8901a"/><rect x="212" y="3" width="1" height="2" fill="#b8901a"/><rect x="218" y="3" width="1" height="2" fill="#b8901a"/><rect x="224" y="3" width="1" height="2" fill="#b8901a"/><rect x="230" y="3" width="1" height="2" fill="#b8901a"/><rect x="146" y="28" width="7" height="2" fill="#1b2a22"/><rect x="234" y="28" width="7" height="2" fill="#1b2a22"/><rect x="235" y="6" width="6" height="6" fill="#1b2a22"/><rect x="236" y="7" width="4" height="4" fill="#9fd3ff"/><g class="clf-cont"><rect x="156" y="0" width="16" height="6" fill="#1b2a22"/><rect x="157" y="1" width="14" height="4" fill="#C62828"/><rect x="159" y="1" width="1" height="4" fill="#8e1c1c"/><rect x="162" y="1" width="1" height="4" fill="#8e1c1c"/><rect x="165" y="1" width="1" height="4" fill="#8e1c1c"/><rect x="168" y="1" width="1" height="4" fill="#8e1c1c"/><rect x="169" y="2" width="1" height="2" fill="#e8e8e8"/></g><g class="clf-cable"><rect x="160" y="0" width="1" height="10" fill="#2b2b2b"/><rect x="167" y="0" width="1" height="10" fill="#2b2b2b"/></g><g class="clf-spreader"><rect x="156" y="0" width="16" height="2" fill="#1b2a22"/><rect x="157" y="0" width="14" height="1" fill="#f2f2f2"/></g><g class="clf-carro"><rect x="158" y="6" width="12" height="3" fill="#1b2a22"/><rect x="159" y="6" width="10" height="2" fill="#555f69"/></g></svg>'
+ 

@@ -88,7 +88,7 @@ def render_clasificador(usuario: dict, es_admin: bool):
     st.markdown(_CSS, unsafe_allow_html=True)
     st.markdown(
         f"""<div class='clf-cab'>
-              <img class='clf-masc' alt='Mascota' src='data:image/png;base64,{cl.MASCOTA_PNG_B64}'>
+              <img class='clf-masc' alt='Mascota' width='190' style='width:190px;max-width:40vw;height:auto;image-rendering:pixelated' src='data:image/png;base64,{cl.MASCOTA_PNG_B64}'>
               <div class='clf-globo'><b>¡Ajusto cada caso a su área!</b><br>
               Pega el correo del cliente o busca en el catálogo de tipos de caso.</div>
             </div>""", unsafe_allow_html=True)
@@ -477,10 +477,15 @@ def _panel_admin_sugerencias(usuario, areas):
 
 _CSS = """
 <style>
-.clf-cab{display:flex;align-items:center;gap:14px;margin:2px 0 10px 0;flex-wrap:wrap}
-.clf-masc{width:120px;height:auto;image-rendering:pixelated;image-rendering:crisp-edges;flex:0 0 auto}
+.clf-cab{display:flex;align-items:flex-end;gap:18px;margin:2px 0 14px 0;flex-wrap:wrap;
+  border-bottom:4px solid #E65100;padding-left:6px}
+.clf-masc{width:190px !important;max-width:40vw !important;height:auto !important;object-fit:fill !important;
+  image-rendering:pixelated;image-rendering:crisp-edges;
+  flex:0 0 auto;display:block;margin-bottom:-1px}
 .clf-globo{position:relative;border:3px solid #E65100;border-radius:14px;padding:10px 14px;
-  background:#FFF3E0;color:#3E2723;font-size:14px;max-width:560px}
+  background:#FFF3E0;color:#3E2723;font-size:14px;max-width:560px;margin-bottom:22px}
+.clf-globo:before{content:"";position:absolute;left:-13px;top:22px;border:11px solid transparent;
+  border-right-color:#E65100;border-left:0}
 .clf-globo b{color:#BF360C;font-size:16px}
 .clf-area{display:inline-block;background:#E65100;color:#fff;border-radius:6px;padding:2px 8px;
   font-size:12px;font-weight:600;white-space:nowrap}

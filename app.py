@@ -100,6 +100,7 @@ from app.config import COL_BI, COL_TAB
 # Perfiles ahora vienen de Supabase via database.py
 from app.calendario import get_festivos_oficiales, nombre_festivo
 from app import asignacion_masiva as _am
+from app import ui_clasificador as _ui_clasif
 from app.validaciones import (validar_archivos, aplicar_regla1, aplicar_regla2,
                                calcular_desfases, calcular_montos,
                                normalizar_contenedor, to_date,
@@ -385,14 +386,15 @@ if st.session_state["login_txt"]:
 
 # ── Navegación ──────────────────────────────────────────────────
 tabs_disponibles = ["📊 Análisis", "📋 Historial NC", "📖 Reglas de Aplicación",
-                    "🗂️ Gestión NC", "🔀 Transferencias"]
+                    "🗂️ Gestión NC", "🔀 Transferencias", "🔧 Clasificador de Casos"]
 if es_admin:
     tabs_disponibles.append("👥 Usuarios")
 
 # Índices dinámicos según el rol
 IDX_GESTION       = 3
 IDX_TRANSFEREN    = 4
-IDX_USUARIOS      = 5 if es_admin else None
+IDX_CLASIF        = 5
+IDX_USUARIOS      = 6 if es_admin else None
 
 # ── Popup de notificaciones al iniciar sesión ───────────────────
 if not st.session_state.get("notif_mostrado", False):
@@ -422,6 +424,7 @@ if not st.session_state.get("notif_mostrado", False):
                 st.toast(f"❌ Tu solicitud del perfil «{_r['nombre']}» fue RECHAZADA. "
                          f"Motivo: {_r.get('motivo_rechazo') or 'sin motivo'}", icon="❌")
         marcar_solicitudes_perfil_notificadas([r["id"] for r in _resueltas])
+    _ui_clasif.avisos_inicio_sesion(usuario, es_admin)
     st.session_state["notif_mostrado"] = True
 
 # Estilo "cinta": solo se ve el módulo actual; al pasar el mouse se abren todos.
@@ -3134,6 +3137,13 @@ with nav[IDX_TRANSFEREN]:
                 if st.button("Siguiente ▶", disabled=pag_t >= total_pags_t, key="trans_pag_sig"):
                     st.session_state["trans_pag"] = pag_t + 1
                     st.rerun()
+
+# ════════════════════════════════════════════════════════════════
+#   PESTAÑA — CLASIFICADOR DE CASOS (lógica en app/clasificador.py,
+#   pantallas en app/ui_clasificador.py)
+# ════════════════════════════════════════════════════════════════
+with nav[IDX_CLASIF]:
+    _ui_clasif.render_clasificador(usuario, es_admin)
 
 if es_admin and IDX_USUARIOS is not None:
     with nav[IDX_USUARIOS]:

@@ -23,7 +23,9 @@ STOP = set((
     "nosotros o otra otro para pero poco por porque pues que quien se sea ser si sin sobre solo su sus tal "
     "tambien tanto te tiene tienen todo todos tu un una uno unos usted ustedes y ya yo favor saludos dia "
     "dias tardes cordial apoyo ayuda quisiera quiero queremos necesito necesitamos poder puedo pueden "
-    "podrian solicito solicitamos etc caso casos cliente clientes cmsa"
+    "podrian solicito solicitamos etc caso casos cliente clientes cmsa escribo escribe sale salir saber "
+    "paso mes pasado noches estimado estimados estimada equipo correo adjunto adjunta anexo anexa mismo "
+    "esto ahora tambien"
 ).split())
 
 PESOS = {"motivo": 3.0, "palabras_clave": 3.0, "descripcion": 1.2, "area": 0.6}
@@ -58,51 +60,141 @@ def raices(texto) -> list:
 # ── Índice ─────────────────────────────────────────────────────
 def construir_indice(motivos: list) -> dict:
     """motivos: lista de dicts con motivo, area, descripcion, palabras_clave."""
+    import math
     docs = []
     for m in motivos:
         pesos = {}
         for campo, w in PESOS.items():
             for r in raices(m.get(campo) or ""):
                 pesos[r] = max(pesos.get(r, 0), w)
-        docs.append((m, pesos))
+        # frases de 2+ palabras en las palabras clave ("no puedo entrar", "sesion bloqueada"):
+        # si aparecen completas en el correo valen extra
+        frases = [normalizar(f) for f in str(m.get("palabras_clave") or "").split(",")
+                  if len(normalizar(f).split()) >= 2]
+        docs.append((m, pesos, frases))
     df = {}
-    for _, pesos in docs:
+    for _, pesos, _ in docs:
         for r in pesos:
             df[r] = df.get(r, 0) + 1
-    import math
     n = max(len(docs), 1)
     idf = {r: math.log(1 + n / c) for r, c in df.items()}
     return {"docs": docs, "idf": idf}
 
 
-def clasificar(texto: str, indice: dict, top: int = 3) -> dict:
-    """
-    Regresa {"nivel": alta|media|baja, "empate": bool, "items": [...]}.
-    Cada item: motivo (dict original), score, rel (% frente al 1.º), hits (palabras).
-    """
-    q = list(dict.fromkeys(raices(texto)))
-    vacio = {"nivel": "baja", "empate": False, "items": []}
-    if not q or not indice.get("docs"):
-        return vacio
+# ── Limpieza del correo: quitar hilo anterior, firma y avisos legales ──
+_CORTES = [
+    r"^\s*(de|from|enviado el|sent|para|to)\s*:",          # encabezados de correos citados
+    r"^\s*-{2,}\s*(mensaje original|original message)",
+    r"^\s*el .{5,80} escribio\s*:",                        # "El lun, ... escribió:"
+    r"^\s*on .{5,80} wrote\s*:",
+    r"^\s*(enviado desde|sent from) ",
+    r"^\s*(este correo|este mensaje|la informacion contenida|aviso de confidencialidad|confidencial)",
+]
+_DESPEDIDAS = r"^\s*(saludos|saludo|atentamente|quedo atento|quedo atenta|quedo en espera|gracias de antemano|cordialmente|un saludo|best regards|regards)\b"
+
+
+def limpiar_correo(texto: str) -> str:
+    """Deja solo el mensaje nuevo: corta en el primer correo citado o aviso legal,
+    y en la despedida (lo que sigue suele ser la firma)."""
+    lineas = str(texto or "").splitlines()
+    salida = []
+    for ln in lineas:
+        n = normalizar(ln) if ln.strip() else ""
+        bruto = unicodedata.normalize("NFD", ln.lower())
+        bruto = "".join(c for c in bruto if unicodedata.category(c) != "Mn")
+        if any(re.search(p, bruto) for p in _CORTES):
+            break
+        if re.search(_DESPEDIDAS, bruto) and len(n.split()) <= 6:
+            break
+        salida.append(ln)
+    limpio = "\n".join(salida).strip()
+    return limpio or str(texto or "")
+
+
+def oraciones(texto: str) -> list:
+    partes = re.split(r"(?<=[.!?¿¡])\s+|\n+", str(texto or ""))
+    return [p.strip() for p in partes if len(normalizar(p).split()) >= 3]
+
+
+def _consulta_ponderada(texto: str, asunto: str = "") -> dict:
+    """Raíz → peso. El asunto pesa 2, las 2 primeras oraciones 1.5 y el resto 1
+    (la idea principal casi siempre va en el asunto o al inicio)."""
+    q = {}
+    for r in raices(asunto):
+        q[r] = max(q.get(r, 0), 2.0)
+    for i, o in enumerate(oraciones(texto)):
+        w = 1.5 if i < 2 else 1.0
+        for r in raices(o):
+            q[r] = max(q.get(r, 0), w)
+    if not q:                                   # texto sin oraciones "largas"
+        for r in raices(texto):
+            q[r] = max(q.get(r, 0), 1.0)
+    return q
+
+
+def _puntuar(q: dict, texto_norm: str, indice: dict) -> list:
     idf = indice["idf"]
     res = []
-    for m, pesos in indice["docs"]:
+    for m, pesos, frases in indice["docs"]:
         s, hits = 0.0, []
-        for r in q:
+        for r, wq in q.items():
             if r in pesos:
-                s += idf[r] * pesos[r]
+                s += idf[r] * pesos[r] * wq
                 hits.append(r)
+        for f in frases:
+            if f and f" {f} " in f" {texto_norm} ":
+                s += 6.0
+                hits.append(f"«{f}»")
         if s > 0:
             res.append({"motivo": m, "score": s, "hits": hits})
+    res.sort(key=lambda x: -x["score"])
+    return res
+
+
+def clasificar(texto: str, indice: dict, top: int = 3, asunto: str = "", limpiar: bool = True) -> dict:
+    """
+    Regresa {"nivel": alta|media|baja, "empate": bool, "items": [...], "temas": [...]}.
+    Cada item: motivo (dict original), score, rel (% frente al 1.º), hits (palabras).
+    "temas": otros temas que aparecen en oraciones sueltas del correo (correos con varias peticiones).
+    """
+    vacio = {"nivel": "baja", "empate": False, "items": [], "temas": []}
+    if not indice.get("docs"):
+        return vacio
+    cuerpo = limpiar_correo(texto) if limpiar else str(texto or "")
+    q = _consulta_ponderada(cuerpo, asunto)
+    if not q:
+        return vacio
+    res = _puntuar(q, normalizar(asunto + " " + cuerpo), indice)
     if not res:
         return vacio
-    res.sort(key=lambda x: -x["score"])
     s1 = res[0]["score"]
     s2 = res[1]["score"] if len(res) > 1 else 0
     margen = (s1 - s2) / s1 if s1 else 0
     nivel = "alta" if (s1 >= 25 and margen >= 0.35) else "media" if (s1 >= 14 and margen >= 0.15) else "baja"
     items = [dict(x, rel=round(100 * x["score"] / s1)) for x in res[:top]]
-    return {"nivel": nivel, "empate": len(res) > 1 and margen < 0.05, "items": items}
+    return {"nivel": nivel, "empate": len(res) > 1 and margen < 0.05, "items": items,
+            "temas": temas_del_correo(cuerpo, indice, excluir={clave_motivo(items[0]["motivo"]["motivo"])})}
+
+
+def temas_del_correo(cuerpo: str, indice: dict, excluir: set = None, minimo: float = 12.0, maximo: int = 3) -> list:
+    """Clasifica cada oración por separado para detectar peticiones adicionales.
+    Regresa [{motivo, score, oracion}] de temas distintos al principal, con puntaje suficiente."""
+    excluir = set(excluir or set())
+    temas = {}
+    for o in oraciones(cuerpo):
+        q = {r: 1.0 for r in raices(o)}
+        r = _puntuar(q, normalizar(o), indice)
+        if not r or r[0]["score"] < minimo:
+            continue
+        # la oración debe apuntar claramente a un motivo (no empate)
+        if len(r) > 1 and r[1]["score"] > r[0]["score"] * 0.85:
+            continue
+        k = clave_motivo(r[0]["motivo"]["motivo"])
+        if k in excluir:
+            continue
+        if k not in temas or r[0]["score"] > temas[k]["score"]:
+            temas[k] = {"motivo": r[0]["motivo"], "score": r[0]["score"], "oracion": o}
+    return sorted(temas.values(), key=lambda x: -x["score"])[:maximo]
 
 
 def buscar(texto: str, motivos: list, indice: dict, limite: int = 15) -> list:

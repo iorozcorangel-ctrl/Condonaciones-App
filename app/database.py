@@ -1603,6 +1603,13 @@ def resolver_clasif_sugerencia(sug: dict, aprobar: bool, admin_nombre: str,
         if aprobar:
             tipo = sug.get("tipo")
             mid = sug.get("motivo_id")
+            if tipo == "reclasificar":
+                # correo que no encajó en las 3 sugerencias: el admin elige el tipo correcto
+                # y sus palabras se agregan a ese tipo de caso
+                tipo = "palabras"
+                mid = prop.get("motivo_id") or mid
+                prop = {"palabras_clave": prop.get("palabras_clave", ""),
+                        "no_confundir": prop.get("no_confundir", ""), "motivo_id": mid}
             if tipo == "nuevo":
                 ok, r = guardar_clasif_motivo({**prop, "activo": True}, admin_nombre)
             elif tipo in ("corregir", "palabras", "baja"):

@@ -19,6 +19,9 @@ TIPOS_SUG = {
     "palabras": "🔑 Palabras clave / diferenciador",
     "baja":     "🚫 Dar de baja un motivo",
 }
+# Tipos que solo se muestran (no se eligen en el formulario de Sugerencias)
+TIPOS_SUG_TODOS = {**TIPOS_SUG, "reclasificar": "🔁 Correo sin motivo correcto"}
+
 NIVEL_TXT = {
     "alta":  ("success", "Confianza alta: la primera opción sobresale claramente."),
     "media": ("warning", "Confianza media: revisa la primera opción antes de usarla."),
@@ -116,17 +119,21 @@ def _tab_clasificar(usuario):
     with c1:
         st.markdown("<div class='sec-hdr'>✉️ Clasificar un correo</div>", unsafe_allow_html=True)
         with st.form("clf_form_correo"):
-            texto = st.text_area("Pega el correo del cliente (asunto y cuerpo)", height=200,
+            asunto = st.text_input("Asunto del correo (opcional, pesa más)", key="clf_asunto",
+                                   placeholder="Ej.: Sesión bloqueada")
+            texto = st.text_area("Pega el cuerpo del correo", height=200,
                                  key="clf_texto",
                                  placeholder="Ej.: Hola, no puedo entrar al portal ISCS, me sale que mi "
                                              "sesión está bloqueada por adeudo…")
             ok = st.form_submit_button("🔍 Sugerir motivo", type="primary")
         if ok:
-            st.session_state["clf_resultado"] = cl.clasificar(texto, _indice(), top=3) if texto.strip() else None
-            st.session_state["clf_texto_usado"] = texto
+            st.session_state["clf_resultado"] = (cl.clasificar(texto, _indice(), top=3, asunto=asunto)
+                                                 if (texto.strip() or asunto.strip()) else None)
+            st.session_state["clf_texto_usado"] = (asunto + "\n" + cl.limpiar_correo(texto)).strip()
             st.session_state["clf_confirmado"] = None
         st.caption("🔒 El correo no se guarda. Si confirmas un motivo, solo se envían al admin "
-                   "palabras clave útiles (sin nombres, RFC, contenedores ni números).")
+                   "palabras clave útiles (sin nombres, RFC, contenedores ni números). La firma y los "
+                   "correos anteriores del hilo se ignoran solos.")
     with c2:
         st.markdown("<div class='sec-hdr'>🔎 Buscar en el catálogo</div>", unsafe_allow_html=True)
         q = st.text_input("Escribe palabras (ej. cita, sello, factura, credencial)", key="clf_buscar")
@@ -155,7 +162,7 @@ def _tab_clasificar(usuario):
         m = it["motivo"]
         with st.container(border=True):
             h1, h2 = st.columns([4, 1])
-            h1.markdown(f"**{i + 1}. {_esc(m['motivo'])}**")
+            h1.markdown(f"**{i + 1}. {_esc(m['motivo'])}**" + ("  ·  ⭐ idea principal" if i == 0 else ""))
             h2.markdown(f"<span class='clf-area'>{_esc(m.get('area'))}</span>", unsafe_allow_html=True)
             if m.get("descripcion"):
                 st.caption(m["descripcion"])
@@ -168,6 +175,60 @@ def _tab_clasificar(usuario):
             if st.button("✅ Es este motivo", key=f"clf_conf_{i}_{m.get('id')}",
                          type="primary" if i == 0 else "secondary"):
                 _confirmar(usuario, m)
+    # ── Opción 4: dejar como «Otros» ──
+    with st.container(border=True):
+        o1, o2 = st.columns([4, 1])
+        o1.markdown("**4. Otros**  \nNinguna aplica y no hace falta un tipo nuevo: se queda como «Otros».")
+        o2.markdown("<span class='clf-area'>Otros</span>", unsafe_allow_html=True)
+        if st.button("📂 Dejar como «Otros»", key="clf_otros"):
+            otros = next((x for x in _activos() if cl.clave_motivo(x["motivo"]) == "otros"),
+                         {"motivo": "Otros", "area": "Otros"})
+            st.session_state["clf_confirmado"] = dict(otros, _msg="")
+    # ── Opción 5: sugerir otro tipo de caso distinto ──
+    with st.container(border=True):
+        st.markdown("**5. Sugerir otro tipo de caso distinto**  \nSi ninguna de las 3 es correcta, "
+                    "explica por qué; el admin lo revisa y con eso aprende el clasificador.")
+        nombres = ["— No sé / no está en el catálogo —"] + [
+            f"{x['motivo']}  ·  {x.get('area')}" for x in sorted(_activos(), key=lambda y: cl.normalizar(y["motivo"]))]
+        with st.form(f"clf_form_otro_{st.session_state.get('clf_otro_n', 0)}"):
+            por_que = st.text_area("¿Por qué ninguna de las 3 opciones es la correcta? *", height=80)
+            elegido = st.selectbox("Si sabes cuál es el tipo de caso correcto, elígelo (opcional)", nombres)
+            enviar_otro = st.form_submit_button("📨 Enviar al admin")
+        if enviar_otro:
+            if not por_que.strip():
+                st.error("Escribe por qué ninguna de las 3 opciones es la correcta.")
+            else:
+                orden = sorted(_activos(), key=lambda y: cl.normalizar(y["motivo"]))
+                m_ok = None if elegido == nombres[0] else orden[nombres.index(elegido) - 1]
+                palabras = cl.extraer_palabras_clave(st.session_state.get("clf_texto_usado", ""))
+                prop = {"palabras_clave": ", ".join(palabras),
+                        "sugeridos_sistema": " | ".join(x["motivo"]["motivo"] for x in R["items"])}
+                if m_ok:
+                    prop["motivo_id"] = m_ok["id"]
+                ok_o, err_o = dbm.crear_clasif_sugerencia(
+                    "reclasificar", prop, por_que.strip(), usuario["id"], usuario["nombre_completo"],
+                    (m_ok or {}).get("id"), (m_ok or {}).get("motivo") or "(sin elegir)")
+                if ok_o:
+                    _sug_pendientes.clear()
+                    st.session_state["clf_otro_n"] = st.session_state.get("clf_otro_n", 0) + 1
+                    st.session_state["clf_confirmado"] = {
+                        "motivo": (m_ok or {}).get("motivo") or "pendiente de revisión",
+                        "area": (m_ok or {}).get("area") or "—",
+                        "_msg": "Se envió al admin para revisión. ¡Gracias, así aprende el clasificador!"}
+                    st.rerun()
+                else:
+                    st.error(f"No se pudo enviar: {err_o}")
+
+    # ── Otros temas en el mismo correo ──
+    if R.get("temas"):
+        st.markdown("<div class='sec-hdr'>🧩 El correo también menciona…</div>", unsafe_allow_html=True)
+        st.caption("Detectado oración por oración. Si el cliente pide varias cosas, puede requerir "
+                   "más de un caso o área.")
+        for tm in R["temas"]:
+            mm = tm["motivo"]
+            st.markdown(f"- **{_esc(mm['motivo'])}** <span class='clf-area'>{_esc(mm.get('area'))}</span> — "
+                        f"<i>«{_esc(tm['oracion'][:160])}»</i>", unsafe_allow_html=True)
+
     conf = st.session_state.get("clf_confirmado")
     if conf:
         st.success(f"Caso clasificado como **{conf['motivo']}** → área **{conf.get('area')}**. "
@@ -418,7 +479,7 @@ def _tab_sugerencias(usuario, es_admin):
         ico = {"pendiente": "⏳", "aprobada": "✅", "rechazada": "❌"}
         st.dataframe(pd.DataFrame([{
             "Estado": f"{ico.get(s['estado'], '')} {s['estado']}",
-            "Tipo": TIPOS_SUG.get(s["tipo"], s["tipo"]),
+            "Tipo": TIPOS_SUG_TODOS.get(s["tipo"], s["tipo"]),
             "Motivo": s.get("motivo_nombre") or "",
             "Comentario": s.get("comentario") or "",
             "Motivo de rechazo": s.get("motivo_rechazo") or "",
@@ -435,7 +496,7 @@ def _panel_admin_sugerencias(usuario, areas):
     for s in pend:
         prop = s.get("propuesta") or {}
         actual = todos.get(s.get("motivo_id")) or {}
-        titulo = f"{TIPOS_SUG.get(s['tipo'], s['tipo'])} — {s.get('motivo_nombre') or prop.get('motivo') or ''} · por {s.get('solicitante_nombre')}"
+        titulo = f"{TIPOS_SUG_TODOS.get(s['tipo'], s['tipo'])} — {s.get('motivo_nombre') or prop.get('motivo') or ''} · por {s.get('solicitante_nombre')}"
         with st.expander(titulo, expanded=len(pend) <= 3):
             st.caption(f"Comentario: {s.get('comentario') or '—'}")
             with st.form(f"clf_form_res_{s['id']}"):
@@ -450,6 +511,19 @@ def _panel_admin_sugerencias(usuario, areas):
                             final[campo] = st.text_area(lbl, value=prop.get(campo, ""), help=ayuda, height=80)
                         else:
                             final[campo] = st.text_input(lbl, value=prop.get(campo, ""), help=ayuda)
+                elif s["tipo"] == "reclasificar":
+                    st.caption(f"El sistema había sugerido: {prop.get('sugeridos_sistema') or '—'}")
+                    orden = sorted(_motivos_todos(), key=lambda y: cl.normalizar(y["motivo"]))
+                    ops = [f"{x['motivo']}  ·  {x.get('area')}" for x in orden]
+                    pre = next((i for i, x in enumerate(orden) if x.get("id") == prop.get("motivo_id")), None)
+                    sel = st.selectbox("Tipo de caso correcto * (si no existe, créalo primero en 📚 Catálogo)",
+                                       range(len(ops)), format_func=lambda i: ops[i], index=pre,
+                                       placeholder="Elige el tipo de caso correcto")
+                    final["motivo_id"] = orden[sel]["id"] if sel is not None else ""
+                    final["palabras_clave"] = st.text_input("Palabras del correo a agregar a ese tipo de caso "
+                                                            "(quita las que no sirvan)",
+                                                            value=prop.get("palabras_clave", ""))
+                    final.pop("sugeridos_sistema", None)
                 elif s["tipo"] == "palabras":
                     st.caption(f"Palabras actuales: {actual.get('palabras_clave') or '—'}")
                     final["palabras_clave"] = st.text_input("Palabras a agregar (puedes quitar las que no sirvan)",
@@ -465,6 +539,8 @@ def _panel_admin_sugerencias(usuario, areas):
             if aprobar or rechazar:
                 if rechazar and not motivo_r.strip():
                     st.warning("Escribe el motivo del rechazo.")
+                elif aprobar and s["tipo"] == "reclasificar" and not final.get("motivo_id"):
+                    st.warning("Elige el tipo de caso correcto antes de aprobar.")
                 else:
                     final = {k: v.strip() for k, v in final.items() if str(v or "").strip()}
                     ok, err = dbm.resolver_clasif_sugerencia(s, bool(aprobar), usuario["nombre_completo"],

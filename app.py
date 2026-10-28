@@ -101,6 +101,7 @@ from app.config import COL_BI, COL_TAB
 from app.calendario import get_festivos_oficiales, nombre_festivo
 from app import asignacion_masiva as _am
 from app import ui_clasificador as _ui_clasif
+from app.escena_qc import QC_HTML as _QC_HTML, QC_CSS as _QC_CSS
 from app.validaciones import (validar_archivos, aplicar_regla1, aplicar_regla2,
                                calcular_desfases, calcular_montos,
                                normalizar_contenedor, to_date,
@@ -348,8 +349,9 @@ with col_titulo:
     <div class='topbar'>
       <div style="font-size:22px;font-weight:600;color:white;margin:0;">🚢 Sistema de Condonaciones</div>
       <p>Terminal Portuaria · Análisis de Condonaciones</p>
+      """ + _QC_HTML + """
     </div>
-    """, unsafe_allow_html=True)
+    """ + _QC_CSS, unsafe_allow_html=True)
 with col_user:
     st.markdown(f"""
     <div style='padding:12px;background:var(--background-color);border-radius:8px;

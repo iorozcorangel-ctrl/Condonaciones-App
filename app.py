@@ -265,7 +265,9 @@ try:
 except Exception:
     pass
 
+_esperando_cookie = False   # True mientras el navegador no contesta si hay cookie
 if not st.session_state.get("autenticado") and not st.session_state.get("_cookie_revisada"):
+    _esperando_cookie = True
     try:
         token = st.context.cookies.get(COOKIE_SESION, "")
         if not token:
@@ -274,6 +276,7 @@ if not st.session_state.get("autenticado") and not st.session_state.get("_cookie
                                            on_token_change=lambda: None), "token", None)
         if token is not None:
             st.session_state["_cookie_revisada"] = True
+            _esperando_cookie = False
         if token:
             from app.database import verificar_sesion as _vs
             usuario_tok = _vs(token)
@@ -300,9 +303,24 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
         </div>
         """, unsafe_allow_html=True)
 
+        if _esperando_cookie:
+            # Tras F5 el navegador tarda un instante en mandar la cookie: en vez
+            # del formulario se ve "Verificando sesión…". Si en 4 s no contesta
+            # (algo falló), el CSS vuelve a mostrar el formulario para no atorar a nadie.
+            st.markdown("""
+            <style>
+            @keyframes _ocultar_luego {to {opacity:0; visibility:hidden; height:0; margin:0;}}
+            @keyframes _mostrar_luego {from {opacity:0; visibility:hidden;} to {opacity:1; visibility:visible;}}
+            .verificando-sesion {animation:_ocultar_luego .3s 4s forwards;}
+            .st-key-caja_login {animation:_mostrar_luego .3s 4s both;}
+            </style>
+            <div class='verificando-sesion' style='text-align:center;color:#666;font-size:18px;padding:20px 0;'>
+              🔄 Verificando sesión…
+            </div>
+            """, unsafe_allow_html=True)
         if st.session_state.pop("_borrar_cookie", False):
             _js_cookie("", 0)
-        with st.form("login"):
+        with st.container(key="caja_login"), st.form("login"):
             username = st.text_input("Usuario", placeholder="Ingresa tu usuario")
             password = st.text_input("Contraseña", type="password")
             if st.form_submit_button("Entrar", width='stretch'):

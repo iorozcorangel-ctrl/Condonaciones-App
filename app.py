@@ -238,13 +238,26 @@ init()
 # ── Sesión persistente con COOKIE (ya no con ?sid= en la URL) ───
 # Antes el token iba en la URL: si alguien compartía el link, la otra persona
 # entraba sin contraseña. Ahora el token vive en una cookie del navegador
-# (no viaja al copiar el link) y se lee con st.context.cookies. Un ?sid= viejo
-# en la URL se ignora y se borra. El token vence a los 5 días (DIAS_MAX_SESION).
+# (no viaja al copiar el link). Un ?sid= viejo en la URL se ignora y se borra.
+# El token vence a los 5 días (DIAS_MAX_SESION).
+# Lectura: en local basta st.context.cookies, pero Streamlit Community Cloud
+# filtra las cookies antes de que lleguen a Python (llega vacío). Por eso,
+# si no aparece ahí, un componente JS lee document.cookie en el navegador y
+# manda el token a Python (_lector_cookie).
 COOKIE_SESION = "cmsa_sid"
 
 def _js_cookie(valor: str, max_age: int):
     st.html(f"<script>document.cookie='{COOKIE_SESION}={valor}; path=/; max-age={max_age}; "
             f"SameSite=Strict; Secure';</script>", unsafe_allow_javascript=True)
+
+_LECTOR_COOKIE_JS = """
+export default function(component) {
+    const { setStateValue, data } = component;
+    const par = document.cookie.split('; ').find(c => c.startsWith(data + '='));
+    setStateValue('token', par ? par.slice(data.length + 1) : '');
+}
+"""
+_lector_cookie = st.components.v2.component("lector_cookie_sesion", js=_LECTOR_COOKIE_JS)
 
 try:
     if "sid" in st.query_params:          # links viejos con token: ya no dan acceso
@@ -253,9 +266,14 @@ except Exception:
     pass
 
 if not st.session_state.get("autenticado") and not st.session_state.get("_cookie_revisada"):
-    st.session_state["_cookie_revisada"] = True
     try:
         token = st.context.cookies.get(COOKIE_SESION, "")
+        if not token:
+            # None = el navegador todavía no contesta; '' = no hay cookie
+            token = getattr(_lector_cookie(data=COOKIE_SESION, key="_lector_cookie",
+                                           on_token_change=lambda: None), "token", None)
+        if token is not None:
+            st.session_state["_cookie_revisada"] = True
         if token:
             from app.database import verificar_sesion as _vs
             usuario_tok = _vs(token)

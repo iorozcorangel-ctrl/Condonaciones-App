@@ -45,7 +45,8 @@ Streamlit (Python 3.11) + Supabase (PostgreSQL, plan gratis) para una terminal p
 
 ## Sesión e inicio de sesión (actualizado 28 oct 2026)
 - El token de sesión vive en una **cookie** del navegador (`cmsa_sid`), NO en la URL. Si hay un `?sid=` en la URL, se ignora y se borra.
-- La cookie se escribe y se borra con `st.html("<script>…</script>", unsafe_allow_javascript=True)` y se lee con `st.context.cookies`.
+- La cookie se escribe y se borra con `st.html("<script>…</script>", unsafe_allow_javascript=True)`.
+- Se lee primero con `st.context.cookies` (sirve en local) y, si llega vacío, con el componente JS `_lector_cookie` (`st.components.v2`), que lee `document.cookie` en el navegador. **En Streamlit Community Cloud `st.context.cookies` siempre llega vacío** (la nube filtra las cookies): nunca confíes solo en él.
 - La sesión dura 5 días (`DIAS_MAX_SESION`) y hay un máximo de 3 sesiones por usuario.
 - **Nunca** vuelvas a poner tokens, contraseñas o llaves en la URL ni en el repositorio (es público). Los secretos van solo en Streamlit Cloud → Settings → Secrets.
 

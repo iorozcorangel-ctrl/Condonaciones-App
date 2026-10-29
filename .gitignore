@@ -1,0 +1,6 @@
+# Secretos: NUNCA subirlos al repositorio (es público)
+.streamlit/secrets.toml
+
+# Archivos temporales de Python
+__pycache__/
+*.pyc

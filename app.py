@@ -235,14 +235,27 @@ def init():
 
 init()
 
-# ── Restaurar sesión desde el token en la URL (?sid=...) ────────
-# Mientras la URL conserve ?sid=..., la sesión se restaura automáticamente
-# al recargar (F5), navegar o volver a abrir la pestaña. El token vence de
-# forma ABSOLUTA a los 5 días (ver DIAS_MAX_SESION en database.py).
-if not st.session_state.get("autenticado"):
+# ── Sesión persistente con COOKIE (ya no con ?sid= en la URL) ───
+# Antes el token iba en la URL: si alguien compartía el link, la otra persona
+# entraba sin contraseña. Ahora el token vive en una cookie del navegador
+# (no viaja al copiar el link) y se lee con st.context.cookies. Un ?sid= viejo
+# en la URL se ignora y se borra. El token vence a los 5 días (DIAS_MAX_SESION).
+COOKIE_SESION = "cmsa_sid"
+
+def _js_cookie(valor: str, max_age: int):
+    st.html(f"<script>document.cookie='{COOKIE_SESION}={valor}; path=/; max-age={max_age}; "
+            f"SameSite=Strict; Secure';</script>", unsafe_allow_javascript=True)
+
+try:
+    if "sid" in st.query_params:          # links viejos con token: ya no dan acceso
+        del st.query_params["sid"]
+except Exception:
+    pass
+
+if not st.session_state.get("autenticado") and not st.session_state.get("_cookie_revisada"):
+    st.session_state["_cookie_revisada"] = True
     try:
-        params = st.query_params
-        token  = params.get("sid", "")
+        token = st.context.cookies.get(COOKIE_SESION, "")
         if token:
             from app.database import verificar_sesion as _vs
             usuario_tok = _vs(token)
@@ -252,7 +265,7 @@ if not st.session_state.get("autenticado"):
                 st.session_state["session_token"] = token
                 st.rerun()
             else:
-                st.query_params.clear()
+                st.session_state["_borrar_cookie"] = True
     except Exception:
         pass
 
@@ -269,6 +282,8 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
         </div>
         """, unsafe_allow_html=True)
 
+        if st.session_state.pop("_borrar_cookie", False):
+            _js_cookie("", 0)
         with st.form("login"):
             username = st.text_input("Usuario", placeholder="Ingresa tu usuario")
             password = st.text_input("Contraseña", type="password")
@@ -282,13 +297,13 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
                         st.session_state["autenticado"]   = True
                         st.session_state["usuario"]       = usuario
                         st.session_state["login_dt"]      = datetime.now(ZONA_MX)
-                        # Crear sesión en BD (expira a los 5 días) y
-                        # guardar el token en la URL para persistencia
+                        # Crear sesión en BD (expira a los 5 días); el token se guarda
+                        # en una cookie del navegador (se escribe en el siguiente render)
                         from app.database import crear_sesion as _cs
                         tok = _cs(usuario["id"], usuario["username"])
                         if tok:
                             st.session_state["session_token"] = tok
-                            st.query_params["sid"] = tok
+                            st.session_state["_cookie_pendiente"] = tok
                         st.rerun()
                     else:
                         st.error("Usuario o contraseña incorrectos")
@@ -300,6 +315,11 @@ if not st.session_state.get("autenticado") or st.session_state.get("usuario") is
 
 usuario     = st.session_state["usuario"]
 es_admin    = usuario["rol"] == "admin"
+
+# Escribir la cookie de sesión recién creada (una sola vez)
+if st.session_state.get("_cookie_pendiente"):
+    from app.database import DIAS_MAX_SESION as _DMS
+    _js_cookie(st.session_state.pop("_cookie_pendiente"), _DMS * 24 * 3600)
 
 # ── Verificar expiración absoluta (5 días) — cada 2 minutos, no en cada
 #    render (evita un round-trip a Supabase por cada clic) ──────────────
@@ -314,6 +334,8 @@ if st.session_state.get("session_token") and (_time.time() - _ultima_verif > 120
         st.query_params.clear()
         for k in list(st.session_state.keys()):
             del st.session_state[k]
+        st.session_state["_cookie_revisada"] = True
+        st.session_state["_borrar_cookie"] = True
         st.rerun()
 
 # ── Cargar perfiles desde Supabase si no están cargados ────────
@@ -369,6 +391,8 @@ with col_user:
             pass
         for k in list(st.session_state.keys()):
             del st.session_state[k]
+        st.session_state["_cookie_revisada"] = True
+        st.session_state["_borrar_cookie"] = True
         st.rerun()
 
 # ── Sello de fecha/hora de ingreso (arriba a la izquierda, discreto) ──

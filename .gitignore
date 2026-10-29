@@ -1,5 +1,4 @@
-# Contraseñas y llaves: nunca se suben a GitHub.
-# En Streamlit Cloud se capturan en Settings → Secrets.
+# Secretos: NUNCA subirlos al repositorio (es público)
 .streamlit/secrets.toml
 
 # Archivos temporales de Python

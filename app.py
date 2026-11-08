@@ -2972,8 +2972,8 @@ with nav[IDX_TRANSFEREN]:
                 st.caption(
                     "Debe tener estas columnas (el nombre puede variar un poco): "
                     "**Unit Nbr**, **Line Op**, **Type Arch ISO** (obligatorias) y "
-                    "**T-State**, **O/B Dclrd Mode**, **Stop-Vsl**, **Stop-Road** "
-                    "(opcionales). Los encabezados deben estar en la fila 5 del Excel."
+                    "**T-State**, **O/B Dclrd Mode**, **Stop-Vsl**, **Stop-Road**, "
+                    "**Category** (opcionales). Los encabezados deben estar en la fila 5 del Excel."
                 )
 
             st.caption("Sube ambos archivos y dale clic a Procesar. "
@@ -3011,6 +3011,9 @@ with nav[IDX_TRANSFEREN]:
             if resultado_t["error_bloqueante"]:
                 st.error(resultado_t["error_bloqueante"])
                 st.caption("Corrige el archivo que corresponda y vuelve a subirlo arriba antes de procesar de nuevo.")
+                # Los avisos ayudan a encontrar la causa (p. ej. CATEGORIA mal escrita)
+                for a in resultado_t["alertas"]:
+                    st.warning(a)
 
             elif resultado_t["recintos_no_reconocidos"]:
                 for a in resultado_t["alertas"]:

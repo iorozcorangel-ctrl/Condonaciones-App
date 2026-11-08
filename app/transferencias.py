@@ -12,6 +12,7 @@ import pandas as pd
 from app.validaciones import normalizar_contenedor, validar_formato_contenedor
 from app.transferencias_config import (
     COL_RECINTO_ALIAS, COL_N4_ALIAS, CATEGORIA_TRANSBORDO, CATEGORIA_IMPORTACION,
+    N4_CATEGORY_TRANSSHIP, N4_CATEGORY_IMPORT,
     OB_DCLRD_MODE_VESSEL, OB_DCLRD_MODE_TRUCK, T_STATE_INBOUND, T_STATE_YARD,
     TRUCKING_FIJO, ID_ESTADO_CONTENEDOR_FIJO, normalizar_texto, encontrar_columna,
     es_valor_verdadero,
@@ -27,17 +28,20 @@ def procesar_archivo_recinto(df_raw):
     Lee el Archivo Recinto, filtra por CATEGORIA (solo TRANSBORDO) y deja
     listas las columnas necesarias, ya normalizadas.
 
-    Regresa (df_proc, alertas, error, contenedores_no_transbordo):
+    Regresa (df_proc, alertas, error, contenedores_no_transbordo, df_sin_categoria):
       - df_proc: DataFrame con columnas CONTENEDOR, LINEA_NAVIERA,
         RECINTO_ORIGEN_NOMBRE, RECINTO_DESTINO_NOMBRE (o None si hubo error)
       - alertas: lista de strings (informativas)
       - error: string si falta una columna obligatoria, si no se pudo
         procesar nada; None si todo bien
       - contenedores_no_transbordo: set de contenedores (normalizados) que
-        SÍ vienen en el Archivo Recinto pero con una categoría distinta de
-        Transbordo (p. ej. Importación) y por eso se excluyeron del
-        proceso a propósito — se usa más adelante para que el cruce contra
-        el Archivo Sistema N4 no los marque como discrepancia.
+        SÍ vienen en el Archivo Recinto como Importación y por eso se
+        excluyeron del proceso a propósito — se usa más adelante para que
+        el cruce contra el Archivo Sistema N4 no los marque como discrepancia.
+      - df_sin_categoria: filas cuya CATEGORIA no es TRANSBORDO ni IMPORTACION
+        (mal escrita o vacía, p. ej. "TRASNFERENCIAS"), con las mismas
+        columnas que df_proc más CATEGORIA_ORIGINAL. No se descartan aquí:
+        procesar_transferencias() decide con la columna Category del N4.
     """
     alertas = []
     cols = df_raw.columns
@@ -57,7 +61,7 @@ def procesar_archivo_recinto(df_raw):
         return None, alertas, (
             f"El Archivo Recinto no tiene la(s) columna(s): {', '.join(faltantes)}. "
             f"Favor de verificar los encabezados del archivo."
-        ), set()
+        ), set(), None
 
     df = df_raw.copy()
     df = df[df[col_cont].notna()].copy()
@@ -70,19 +74,41 @@ def procesar_archivo_recinto(df_raw):
     df = df[df["CONTENEDOR"] != ""].copy()
 
     # ── Filtro por CATEGORIA ─────────────────────────────────────
-    df["_categoria_norm"] = df[col_categoria].apply(normalizar_texto)
-    total_transbordo   = (df["_categoria_norm"] == CATEGORIA_TRANSBORDO).sum()
-    total_importacion  = (df["_categoria_norm"] == CATEGORIA_IMPORTACION).sum()
+    df["_categoria_norm"] = df[col_categoria].fillna("").apply(normalizar_texto)  # vacío ≠ "NAN"
+    es_transbordo  = df["_categoria_norm"] == CATEGORIA_TRANSBORDO
+    es_importacion = df["_categoria_norm"] == CATEGORIA_IMPORTACION
+    es_sin_cat     = ~(es_transbordo | es_importacion)
+    total_sin_cat  = int(es_sin_cat.sum())
     alertas.append(
-        f"Total Transbordos: {total_transbordo} — "
-        f"Total Importaciones (eliminadas): {total_importacion}"
+        f"Total Transbordos: {int(es_transbordo.sum())} — "
+        f"Total Importaciones (eliminadas): {int(es_importacion.sum())}"
+        + (f" — Sin categoría válida: {total_sin_cat}" if total_sin_cat else "")
     )
 
-    contenedores_no_transbordo = set(
-        df.loc[df["_categoria_norm"] != CATEGORIA_TRANSBORDO, "CONTENEDOR"]
-    )
+    # Palabras no reconocidas en CATEGORIA (mal escritas o vacías): se avisa
+    # cuáles y cuántas filas traen cada una, para saber cuál es el error.
+    if total_sin_cat:
+        conteo = df.loc[es_sin_cat, "_categoria_norm"].replace("", "(vacío)").value_counts()
+        palabras = ", ".join(f"'{p}' ({n} fila{'s' if n != 1 else ''})" for p, n in conteo.items())
+        alertas.append(
+            f"La columna CATEGORIA del Archivo Recinto trae palabra(s) que el sistema no "
+            f"reconoce (solo acepta TRANSBORDO o IMPORTACION): {palabras}. Para esos "
+            f"contenedores se revisa la columna Category del Archivo Sistema N4: "
+            f"Transship = se incluye como Transbordo, Import = se descarta. "
+            f"Favor de corregir el archivo de origen."
+        )
 
-    df = df[df["_categoria_norm"] == CATEGORIA_TRANSBORDO].copy()
+    contenedores_no_transbordo = set(df.loc[es_importacion, "CONTENEDOR"])
+
+    df["LINEA_NAVIERA"]          = df[col_linea].apply(normalizar_texto) if col_linea else ""
+    df["RECINTO_ORIGEN_NOMBRE"]  = df[col_origen]
+    df["RECINTO_DESTINO_NOMBRE"] = df[col_destino]
+    df["CATEGORIA_ORIGINAL"]     = df["_categoria_norm"]
+
+    columnas = ["CONTENEDOR", "LINEA_NAVIERA", "RECINTO_ORIGEN_NOMBRE", "RECINTO_DESTINO_NOMBRE"]
+    df_sin_categoria = df.loc[es_sin_cat, columnas + ["CATEGORIA_ORIGINAL"]].reset_index(drop=True)
+
+    df = df[es_transbordo].copy()
 
     invalidos = [c for c in df["CONTENEDOR"] if not validar_formato_contenedor(c)]
     if invalidos:
@@ -91,14 +117,9 @@ def procesar_archivo_recinto(df_raw):
             f"(favor de corregir el archivo de origen): {', '.join(sorted(set(invalidos)))}"
         )
 
-    df["LINEA_NAVIERA"]          = df[col_linea].apply(normalizar_texto) if col_linea else ""
-    df["RECINTO_ORIGEN_NOMBRE"]  = df[col_origen]
-    df["RECINTO_DESTINO_NOMBRE"] = df[col_destino]
+    df = df[columnas].reset_index(drop=True)
 
-    df = df[["CONTENEDOR", "LINEA_NAVIERA", "RECINTO_ORIGEN_NOMBRE", "RECINTO_DESTINO_NOMBRE"]]
-    df = df.reset_index(drop=True)
-
-    return df, alertas, None, contenedores_no_transbordo
+    return df, alertas, None, contenedores_no_transbordo, df_sin_categoria
 
 
 # ════════════════════════════════════════════════════════════════
@@ -111,7 +132,8 @@ def procesar_archivo_n4(df_raw):
 
     Regresa (df_proc, alertas, error):
       - df_proc: DataFrame con columnas UNIT_NBR, LINE_OP, TYPE_ARCH_ISO,
-        T_STATE, OB_DCLRD_MODE (o None si hubo error)
+        T_STATE, OB_DCLRD_MODE, CATEGORY (o None si hubo error). CATEGORY es
+        None en todas las filas si el archivo no trae la columna Category.
     """
     alertas = []
     cols = df_raw.columns
@@ -123,6 +145,7 @@ def procesar_archivo_n4(df_raw):
     col_iso   = encontrar_columna(cols, COL_N4_ALIAS["type_arch_iso"])
     col_svsl  = encontrar_columna(cols, COL_N4_ALIAS["stop_vsl"])
     col_sroad = encontrar_columna(cols, COL_N4_ALIAS["stop_road"])
+    col_cat   = encontrar_columna(cols, COL_N4_ALIAS["category"])
 
     faltantes = []
     if not col_unit: faltantes.append("Unit Nbr")
@@ -154,6 +177,7 @@ def procesar_archivo_n4(df_raw):
     df["OB_DCLRD_MODE"] = df[col_ob].apply(normalizar_texto) if col_ob else ""
     df["STOP_VSL"]      = df[col_svsl].apply(es_valor_verdadero) if col_svsl else False
     df["STOP_ROAD"]     = df[col_sroad].apply(es_valor_verdadero) if col_sroad else False
+    df["CATEGORY"]      = df[col_cat].apply(normalizar_texto) if col_cat else None
 
     # ── Consistencia T-State vs O/B Dclrd Mode (nunca bloquea) ───
     for _, row in df.iterrows():
@@ -187,7 +211,8 @@ def procesar_archivo_n4(df_raw):
                 f"favor validar"
             )
 
-    df = df[["UNIT_NBR", "LINE_OP", "LINE_OP_NORM", "TYPE_ARCH_ISO", "T_STATE", "OB_DCLRD_MODE"]]
+    df = df[["UNIT_NBR", "LINE_OP", "LINE_OP_NORM", "TYPE_ARCH_ISO", "T_STATE", "OB_DCLRD_MODE",
+             "CATEGORY"]]
     df = df.reset_index(drop=True)
 
     return df, alertas, None
@@ -277,6 +302,95 @@ def resolver_naviera(nombre, catalogo_navieras):
 
 
 # ════════════════════════════════════════════════════════════════
+#   CATEGORIA MAL ESCRITA → DECIDE EL N4 (NUNCA BLOQUEA)
+# ════════════════════════════════════════════════════════════════
+
+def _decidir_categoria_con_n4(df_recinto, df_sin_cat, df_n4, contenedores_importacion):
+    """
+    Para las filas del Archivo Recinto cuya CATEGORIA no se reconoce
+    (df_sin_cat), revisa la columna Category del Archivo Sistema N4:
+      - Transship → se agrega a df_recinto como Transbordo.
+      - Import    → se descarta.
+      - Sin dato (no está en el N4, el N4 no trae la columna, u otro
+        valor) → no se incluye.
+    También avisa cuando el Archivo Recinto y el N4 no coinciden en la
+    categoría; en ese caso manda lo que dice el Archivo Recinto.
+
+    Regresa (df_recinto_actualizado, alertas, excluidos) — excluidos es el
+    set de contenedores de df_sin_cat que NO se incluyeron, para que el
+    cruce no los marque como discrepancia.
+    """
+    alertas = []
+    cat_n4 = dict(zip(df_n4["UNIT_NBR"], df_n4["CATEGORY"]))
+    n4_tiene_columna = df_n4["CATEGORY"].notna().any()
+
+    # Avisos de categoría contradictoria (manda el Archivo Recinto)
+    transbordo_vs_import = sorted(c for c in set(df_recinto["CONTENEDOR"])
+                                  if cat_n4.get(c) == N4_CATEGORY_IMPORT)
+    if transbordo_vs_import:
+        alertas.append(
+            f"Contenedor(es) que en el Archivo Recinto son TRANSBORDO pero en la columna "
+            f"Category del Archivo Sistema N4 dicen Import (se respeta el Archivo Recinto "
+            f"y SÍ se incluyen, favor validar): {', '.join(transbordo_vs_import)}"
+        )
+    importacion_vs_transship = sorted(c for c in contenedores_importacion
+                                      if cat_n4.get(c) == N4_CATEGORY_TRANSSHIP)
+    if importacion_vs_transship:
+        alertas.append(
+            f"Contenedor(es) que en el Archivo Recinto son IMPORTACION pero en la columna "
+            f"Category del Archivo Sistema N4 dicen Transship (se respeta el Archivo "
+            f"Recinto y NO se incluyen, favor validar): {', '.join(importacion_vs_transship)}"
+        )
+
+    if df_sin_cat is None or df_sin_cat.empty:
+        return df_recinto, alertas, set()
+
+    ya_transbordo = set(df_recinto["CONTENEDOR"])
+    incluidos, descartados = [], []
+    sin_decidir = {}   # motivo → [contenedores]
+    for _, row in df_sin_cat.iterrows():
+        cont = row["CONTENEDOR"]
+        cat  = cat_n4.get(cont)
+        if cont in ya_transbordo:
+            continue   # también viene como TRANSBORDO en otra fila: ya está incluido
+        if cont not in cat_n4:
+            sin_decidir.setdefault("no aparece en el Archivo Sistema N4", []).append(cont)
+        elif not n4_tiene_columna:
+            sin_decidir.setdefault("el Archivo Sistema N4 no trae la columna Category", []).append(cont)
+        elif cat == N4_CATEGORY_TRANSSHIP:
+            incluidos.append(cont)
+        elif cat == N4_CATEGORY_IMPORT:
+            descartados.append(cont)
+        else:
+            motivo = f"Category del N4 = '{cat}'" if cat else "Category del N4 viene vacía"
+            sin_decidir.setdefault(motivo, []).append(cont)
+
+    if incluidos:
+        alertas.append(
+            f"Contenedor(es) con CATEGORIA mal escrita en el Archivo Recinto que SÍ se "
+            f"incluyeron como Transbordo porque en el Archivo Sistema N4 dicen Transship "
+            f"({len(set(incluidos))}): {', '.join(sorted(set(incluidos)))}"
+        )
+    if descartados:
+        alertas.append(
+            f"Contenedor(es) con CATEGORIA mal escrita en el Archivo Recinto que se "
+            f"descartaron porque en el Archivo Sistema N4 dicen Import "
+            f"({len(set(descartados))}): {', '.join(sorted(set(descartados)))}"
+        )
+    for motivo, conts in sin_decidir.items():
+        alertas.append(
+            f"Contenedor(es) con CATEGORIA mal escrita en el Archivo Recinto que NO se "
+            f"incluyeron porque no se pudo decidir ({motivo}). Corrige la CATEGORIA en el "
+            f"Archivo Recinto si deben ir: {', '.join(sorted(set(conts)))}"
+        )
+
+    df_incluir = df_sin_cat[df_sin_cat["CONTENEDOR"].isin(incluidos)][df_recinto.columns]
+    df_recinto = pd.concat([df_recinto, df_incluir], ignore_index=True)
+    excluidos = set(df_sin_cat["CONTENEDOR"]) - set(incluidos) - ya_transbordo
+    return df_recinto, alertas, excluidos
+
+
+# ════════════════════════════════════════════════════════════════
 #   PROCESO COMPLETO
 # ════════════════════════════════════════════════════════════════
 
@@ -298,7 +412,8 @@ def procesar_transferencias(df_recinto_raw, df_n4_raw, catalogo_recintos,
     """
     alertas = []
 
-    df_recinto, alertas_r, error_r, contenedores_no_transbordo = procesar_archivo_recinto(df_recinto_raw)
+    df_recinto, alertas_r, error_r, contenedores_no_transbordo, df_sin_cat = \
+        procesar_archivo_recinto(df_recinto_raw)
     if error_r:
         return {"error_bloqueante": error_r, "alertas": [], "recintos_no_reconocidos": [],
                 "filas": [], "totales": {}}
@@ -310,12 +425,21 @@ def procesar_transferencias(df_recinto_raw, df_n4_raw, catalogo_recintos,
                 "filas": [], "totales": {}}
     alertas += alertas_n4
 
+    # ── CATEGORIA mal escrita o vacía: decide la columna Category del N4 ──
+    # (nunca bloquea). Transship → se incluye como Transbordo; Import → se
+    # descarta; si no se puede decidir, el contenedor no se incluye.
+    df_recinto, alertas_cat, excluidos_por_categoria = _decidir_categoria_con_n4(
+        df_recinto, df_sin_cat, df_n4, contenedores_no_transbordo)
+    alertas += alertas_cat
+
     # ── Cruce (bloqueante) ───────────────────────────────────────
     # Los contenedores que en el Archivo Recinto son Importación (no
     # Transbordo) se excluyen del cruce: si también vienen en el Archivo
     # Sistema N4, no se consideran discrepancia, ya que a propósito no
-    # forman parte de este proceso.
-    ok, error_cruce, totales = validar_cruce(df_recinto, df_n4, contenedores_no_transbordo)
+    # forman parte de este proceso. Lo mismo con los de categoría mal
+    # escrita que el N4 descartó o no pudo decidir (ya se avisó arriba).
+    ok, error_cruce, totales = validar_cruce(
+        df_recinto, df_n4, contenedores_no_transbordo | excluidos_por_categoria)
     if not ok:
         return {"error_bloqueante": error_cruce, "alertas": alertas,
                 "recintos_no_reconocidos": [], "filas": [], "totales": totales}

@@ -114,9 +114,14 @@ COL_N4_ALIAS = {
     "type_arch_iso": ["Type Arch ISO", "TypeArchISO", "Type Arch"],
     "stop_vsl":      ["Stop-Vsl", "Stop Vsl", "StopVsl", "Stop-VSL"],
     "stop_road":     ["Stop-Road", "Stop Road", "StopRoad", "Stop-ROAD"],
+    "category":      ["Category", "Categoria", "Categoría"],
 }
 
 # Valores válidos (normalizados)
+# Category del N4: solo se usa para decidir los contenedores cuya
+# CATEGORIA del Archivo Recinto viene mal escrita o vacía.
+N4_CATEGORY_TRANSSHIP = "TRANSSHIP"
+N4_CATEGORY_IMPORT    = "IMPORT"
 OB_DCLRD_MODE_VESSEL = "VESSEL"
 OB_DCLRD_MODE_TRUCK  = "TRUCK"
 T_STATE_INBOUND      = "INBOUND"

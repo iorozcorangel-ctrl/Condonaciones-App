@@ -46,3 +46,13 @@ Regla confirmada ("el archivo más chico debe estar completo en el otro"), en `v
 - (29 oct) Mientras el navegador no contesta (`_esperando_cookie`), en lugar del formulario se ve "🔄 Verificando sesión…". El formulario está dentro de `st.container(key="caja_login")` (los `st.form` no reciben clase `st-key-*`) y un CSS lo oculta; si en 4 s no hay respuesta, el CSS lo vuelve a mostrar para no atorar a nadie.
 - Recomendado una vez: `delete from sesiones;` en Supabase para invalidar tokens ya compartidos.
 - Probado (Streamlit 1.66 + Playwright, BD simulada): login → recarga sigue dentro; otro navegador con el mismo link → pide login; link viejo `?sid=token` → pide login; Salir → cookie borrada y recarga pide login.
+
+## Transferencias: CATEGORIA mal escrita → decide el N4 (8 nov 2026)
+- Caso reportado: el Archivo Recinto traía 25 contenedores, 5 con `TRANSBORDO` y 20 con `TRASNFERENCIAS` (mal escrito). Antes, todo lo que no fuera exactamente `TRANSBORDO` se descartaba en silencio junto con Importación, y solo salían 5.
+- Ahora `procesar_archivo_recinto()` separa 3 grupos: TRANSBORDO, IMPORTACION y **sin categoría válida** (mal escrita o vacía, `df_sin_categoria`). Para el tercero decide la columna opcional **Category** del Archivo Sistema N4 (`_decidir_categoria_con_n4()` en `app/transferencias.py`; alias `category` en `COL_N4_ALIAS`):
+  - `Transship` → se incluye como Transbordo. `Import` → se descarta.
+  - Sin dato (no está en el N4, el N4 no trae Category u otro valor) → NO se incluye y se avisa por qué.
+- Decisión del usuario: las palabras parecidas (TRANSBORDOS, TRANSBRODO…) NO se aceptan solas; siempre decide el N4.
+- Avisos nuevos (informativos, nunca detienen): palabras no reconocidas y cuántas filas trae cada una; contenedores incluidos/descartados gracias al N4; los que no se pudieron decidir; y contradicciones (Recinto TRANSBORDO vs N4 Import, Recinto IMPORTACION vs N4 Transship) — en esas manda el Archivo Recinto. El total ahora agrega "Sin categoría válida: N".
+- Si un contenedor viene como TRANSBORDO y también mal escrito en otra fila, no se duplica.
+- Cuando el cruce bloqueante detiene el proceso, ahora también se muestran los avisos debajo del error, para ver la causa.

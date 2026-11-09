@@ -99,24 +99,25 @@ def calcular_dias_habiles_hacia_adelante(fecha_inicio, n_dias, dias_especiales,
     return fecha_actual
 
 
-def resolver_inicio_previo(fecha_previo, fuera_de_ventana, es_profepa=False):
+HORA_CORTE_PREVIO_LV     = "19:00"   # Lunes a Viernes (con o sin PROFEPA)
+HORA_CORTE_PREVIO_SABADO = "14:00"   # Sábado (con o sin PROFEPA)
+
+
+def resolver_inicio_previo(fecha_previo, fuera_de_ventana):
     """
     Ajusta la fecha desde la que arranca el conteo de la Regla 3 según la hora
-    en que se programó el previo (ventana de asignación), solo cuando el
-    usuario decide contabilizarla manualmente (el archivo BI no trae hora).
+    en que se programó el previo (ventana de asignación); la hora la captura
+    el usuario porque el archivo BI no la trae.
 
-    Ventanas de asignación:
-      - Previo normal: Lunes a Viernes antes de las 16:00, Sábado antes de las 12:00.
-        Domingo no tiene ventana.
-      - Previo PROFEPA: Lunes a Viernes antes de las 13:00. Sábado y Domingo no
-        tienen ventana (se saltan ambos).
+    Ventana de asignación (igual con o sin PROFEPA, desde nov 2026):
+      Lunes a Viernes antes de las 19:00, Sábado antes de las 14:00.
+      Domingo no tiene ventana.
 
-    Si se programó DENTRO de la ventana, el conteo arranca ese mismo día
-    (igual que siempre, sin este ajuste). Si se programó FUERA de la ventana,
-    o el día en sí no tiene ventana (domingo siempre; sábado también si es
-    PROFEPA), el conteo arranca en el siguiente día que sí tiene ventana.
+    Si se programó DENTRO de la ventana, el conteo arranca ese mismo día.
+    Si se programó FUERA de la ventana, o es domingo, el conteo arranca en
+    el siguiente día que sí tiene ventana.
     """
-    dias_sin_ventana = (5, 6) if es_profepa else (6,)  # 5=sábado, 6=domingo
+    dias_sin_ventana = (6,)  # 6=domingo
 
     if fecha_previo.weekday() in dias_sin_ventana:
         fuera_de_ventana = True

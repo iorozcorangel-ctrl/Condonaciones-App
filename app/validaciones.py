@@ -350,7 +350,6 @@ def calcular_desfases(df_bi, dias_especiales, perfil, horario_previo=None):
                 fecha_inicio_previo = resolver_inicio_previo(
                     fecha_previo,
                     fuera_de_ventana=ajuste.get("fuera_ventana", False),
-                    es_profepa=ajuste.get("profepa", False),
                 )
 
             if fecha_cancel:

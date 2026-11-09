@@ -98,7 +98,8 @@ def fecha_hora_mx(iso_str) -> str:
 
 from app.config import COL_BI, COL_TAB
 # Perfiles ahora vienen de Supabase via database.py
-from app.calendario import get_festivos_oficiales, nombre_festivo
+from app.calendario import (get_festivos_oficiales, nombre_festivo,
+                            HORA_CORTE_PREVIO_LV, HORA_CORTE_PREVIO_SABADO)
 from app import asignacion_masiva as _am
 from app import ui_clasificador as _ui_clasif
 from app.escena_qc import QC_HTML as _QC_HTML, QC_CSS as _QC_CSS
@@ -836,11 +837,11 @@ with nav[0]:
         # ── Horario de programación del previo (OBLIGATORIO) ────
         # El archivo BI no trae la hora en que se programó el previo, y de eso
         # depende desde qué día arranca la Regla 3. Por cada contenedor con
-        # previo se preguntan 2 cosas (Sí/No) y no se deja iniciar el análisis
-        # hasta contestarlas. No aplica en Condonación Manual Directa.
-        #   Previo normal : L-V antes de las 16:00 · Sábado antes de las 12:00
-        #   Previo PROFEPA: L-V antes de las 13:00 · Sábado sin horario
-        #   Domingo: nunca hay horario (arranca el siguiente día con horario)
+        # previo se pregunta si se programó antes de la hora de corte (Sí/No)
+        # y no se deja iniciar el análisis hasta contestarlo. No aplica en
+        # Condonación Manual Directa. Mismo horario con o sin PROFEPA:
+        #   L-V antes de las 19:00 · Sábado antes de las 14:00
+        #   Domingo: nunca hay horario (arranca el lunes)
         st.session_state["previo_faltantes"] = []
         if not cond_manual_check and st.session_state["df_bi"] is not None:
             df_bi_raw    = st.session_state["df_bi"]
@@ -861,9 +862,9 @@ with nav[0]:
                                 "(obligatorio)</div>", unsafe_allow_html=True)
                     st.caption(
                         "El archivo BI no trae la hora en que se programó el previo y de eso depende "
-                        "desde qué día cuenta la Regla 3. Contesta las 2 preguntas de cada contenedor. "
-                        "Horario de asignación: previo normal L-V antes de las 16:00 y sábado antes de "
-                        "las 12:00; previo PROFEPA L-V antes de las 13:00 (sábado no hay)."
+                        "desde qué día cuenta la Regla 3. Contesta la pregunta de cada contenedor. "
+                        f"Horario de asignación (con o sin PROFEPA): lunes a viernes antes de las "
+                        f"{HORA_CORTE_PREVIO_LV} y sábado antes de las {HORA_CORTE_PREVIO_SABADO}."
                     )
                     horario_previo_prev = dict(st.session_state.get("horario_previo", {}))
                     horario_previo_nuevo, faltantes = {}, []
@@ -874,37 +875,23 @@ with nav[0]:
                             hc1, hc2, hc3 = st.columns([1.3, 1, 1.6])
                             hc1.markdown(f"**{_cont}**  \nPrevio: {_DIAS[_dia]} {_fp.strftime('%d/%m/%Y')}")
                             if _dia == 6:
-                                # Domingo: nunca hay horario (con o sin PROFEPA) → arranca el lunes
+                                # Domingo: nunca hay horario → arranca el lunes
                                 hc2.caption("Domingo: no hay horario de asignación; el conteo "
                                             "arranca el lunes. No hace falta contestar.")
-                                horario_previo_nuevo[_cont] = {"contar": True, "profepa": False,
-                                                               "fuera_ventana": True}
+                                horario_previo_nuevo[_cont] = {"contar": True, "fuera_ventana": True}
                                 continue
-                            _p = hc2.radio("¿Previo con PROFEPA?", ["Sí", "No"], horizontal=True,
-                                           index=None if "profepa" not in _prev else (0 if _prev["profepa"] else 1),
-                                           disabled=bloqueado, key=f"hp_profepa_{ukey}_{_cont}")
-                            _fuera = None
-                            if _p is not None:
-                                _profepa = _p == "Sí"
-                                if _dia == 6 or (_dia == 5 and _profepa):
-                                    hc3.caption("Ese día no hay horario de asignación: el conteo "
-                                                "arranca el siguiente día hábil.")
-                                    _fuera = True
-                                else:
-                                    _corte = "13:00" if _profepa else ("12:00" if _dia == 5 else "16:00")
-                                    _r = hc3.radio(f"¿Se programó antes de las {_corte}?", ["Sí", "No"],
-                                                   horizontal=True,
-                                                   index=None if "fuera_ventana" not in _prev
-                                                   else (1 if _prev["fuera_ventana"] else 0),
-                                                   disabled=bloqueado,
-                                                   key=f"hp_hora_{ukey}_{_cont}_{_corte}")
-                                    if _r is not None:
-                                        _fuera = _r == "No"
-                            if _p is None or _fuera is None:
+                            _corte = HORA_CORTE_PREVIO_SABADO if _dia == 5 else HORA_CORTE_PREVIO_LV
+                            _r = hc2.radio(f"¿Se programó antes de las {_corte}?", ["Sí", "No"],
+                                           horizontal=True,
+                                           index=None if "fuera_ventana" not in _prev
+                                           else (1 if _prev["fuera_ventana"] else 0),
+                                           disabled=bloqueado,
+                                           key=f"hp_hora_{ukey}_{_cont}_{_corte}")
+                            if _r is None:
                                 faltantes.append(_cont)
                             else:
-                                horario_previo_nuevo[_cont] = {"contar": True, "profepa": _p == "Sí",
-                                                               "fuera_ventana": _fuera}
+                                horario_previo_nuevo[_cont] = {"contar": True,
+                                                               "fuera_ventana": _r == "No"}
                     if faltantes:
                         st.warning(f"Faltan por contestar {len(faltantes)} contenedor(es): "
                                    + ", ".join(faltantes))
@@ -2052,20 +2039,18 @@ with nav[tab_reglas_idx]:
 
         🕐 **Horario de programación del previo (obligatorio):**
         El archivo BI no trae la hora en que se programó el previo. En la pantalla
-        de Análisis, después de subir el Archivo BI, se contestan 2 preguntas por
-        cada contenedor con previo: **¿Previo con PROFEPA?** y **¿Se programó antes
-        de la hora de corte?** No se puede iniciar el análisis sin contestarlas.
+        de Análisis, después de subir el Archivo BI, se contesta por cada contenedor
+        con previo: **¿Se programó antes de la hora de corte?** No se puede iniciar
+        el análisis sin contestarlo.
 
-        - **Previo normal:** Lunes a Viernes antes de las 16:00, Sábado antes de las 12:00.
-          El domingo no tiene horario.
-        - **Previo PROFEPA:** Lunes a Viernes antes de las 13:00. Sábado y domingo no
-          tienen horario.
+        - **Horario (igual con o sin PROFEPA):** Lunes a Viernes antes de las 19:00,
+          Sábado antes de las 14:00. El domingo no tiene horario.
 
         Si se programó **antes** del corte, el conteo arranca ese mismo día. Si se
-        programó **después**, o cae en un día sin horario, el conteo arranca el
-        siguiente día que sí tiene horario. Ejemplos (3 días hábiles, sin PROFEPA):
-        lunes 12:00 → último día jueves; lunes 16:00 → último día viernes;
-        sábado 9:00 → último día miércoles; sábado 13:00 → último día jueves.
+        programó **después**, o cae en domingo, el conteo arranca el siguiente día
+        que sí tiene horario. Ejemplos (3 días hábiles):
+        lunes 18:00 → último día jueves; lunes 19:00 → último día viernes;
+        sábado 13:00 → último día miércoles; sábado 14:00 → último día jueves.
 
         💡 **El número de días puede modificarse en perfiles personalizados.**
         """)
